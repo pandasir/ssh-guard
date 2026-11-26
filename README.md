@@ -18,7 +18,7 @@
 
 ### 环境要求
 
-- Go 1.22+
+- Go 1.26+（与 GitHub Actions CI 一致；本地构建 macOS 15+ 桌面端最低需 Go 1.24+）
 - 如需编译桌面版，需要 [Wails v2 CLI](https://wails.io/)（构建脚本会自动检测并安装）
 
 ### 克隆仓库

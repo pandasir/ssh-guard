@@ -36,7 +36,7 @@ jobs:
 
   build-desktop-mac:
     name: Build macOS Desktop (.dmg)
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

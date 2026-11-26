@@ -113,9 +113,23 @@ make build-desktop-win-nsis  # 编译 Windows 桌面端与 NSIS 安装包
 make clean                   # 清理构建产物
 ```
 
-### GitHub Actions 云端构建
+### GitHub Actions 自动构建与发布 Release
 
-仓库内置 [.github/workflows/build-release.yml](.github/workflows/build-release.yml)，支持在 GitHub **Actions** 页面手动触发，或在推送 `v*` 标签时自动构建 macOS 桌面版、Windows 桌面版与多平台 Web 版产物。
+仓库内置 [.github/workflows/build-release.yml](.github/workflows/build-release.yml)，推送 `v*` 标签后会自动在云端构建并创建 GitHub Release：
+
+```bash
+git tag v0.4.0
+git push origin v0.4.0
+```
+
+自动发布的产物包括：
+- `SSH-Guard-macOS-arm64.dmg`：macOS Apple Silicon 桌面版安装镜像（含 `/Applications` 拖放快捷方式）
+- `SSH-Guard-Windows-amd64-installer.exe`：Windows NSIS 标准安装向导程序
+- `SSH-Guard-Windows-amd64-portable.exe`：Windows 免安装绿色单文件桌面版
+- `ssh-guard-web-*`：macOS / Windows / Linux 多平台离线 Web 单二进制
+- `SHA256SUMS.txt`：全部发布文件的 SHA-256 校验清单
+
+也可在 GitHub **Actions** 页面手动触发工作流，仅构建并下载构建产物。
 
 ---
 

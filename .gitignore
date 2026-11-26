@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build outputs & installers
+/bin/
+/dist/
+/build/bin/
+/build/windows/installer/tmp/
+*.dmg
+*.zip
+*.exe
+*.app/
+
+# Local runtime data & recordings
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.cast
+
+# Go test & coverage
+*.test
+*.out
+coverage.txt
+
+# Environment & editors
+.env
+.env.*
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

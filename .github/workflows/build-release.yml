@@ -1,0 +1,76 @@
+name: Build Offline Web & Desktop (Mac M4 + Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-web:
+    name: Build Offline Web Binaries (macOS M4 / Windows / Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Bundle Official Offline xterm.js
+        run: chmod +x scripts/fetch-vendor.sh && ./scripts/fetch-vendor.sh
+      - run: go mod tidy && go test -v ./internal/...
+      - name: Cross-compile Web Edition
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/ssh-guard-web-darwin-arm64 ./cmd/web
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/ssh-guard-web-windows-amd64.exe ./cmd/web
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/ssh-guard-web-windows-arm64.exe ./cmd/web
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/ssh-guard-web-linux-amd64 ./cmd/web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssh-guard-web-binaries
+          path: dist/*
+
+  build-desktop-mac-m4:
+    name: Build Offline Desktop macOS Apple Silicon (M4)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Bundle Official Offline xterm.js
+        run: chmod +x scripts/fetch-vendor.sh scripts/fix-mac-gatekeeper.sh && ./scripts/fetch-vendor.sh
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Build & Ad-hoc Sign macOS ARM64 App
+        run: |
+          go mod tidy
+          wails build -skipbindings -clean -platform darwin/arm64
+          ./scripts/fix-mac-gatekeeper.sh build/bin/SSH-Guard.app
+          cd build/bin && zip -r ../../SSH-Guard-Desktop-macOS-arm64.zip SSH-Guard.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssh-guard-desktop-macos-m4
+          path: SSH-Guard-Desktop-macOS-arm64.zip
+
+  build-desktop-windows:
+    name: Build Offline Desktop Windows (amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Bundle Official Offline xterm.js
+        shell: pwsh
+        run: .\scripts\fetch-vendor.ps1
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Build Windows Exe
+        run: |
+          go mod tidy
+          wails build -skipbindings -clean -platform windows/amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ssh-guard-desktop-windows-amd64
+          path: build/bin/ssh-guard.exe

@@ -1,103 +1,153 @@
-# SSH-Guard v4（纯进程内 IPC 零端口暴露 · 纯离线内置终端 · Web + Mac M4 / Windows）
+# SSH-Guard
 
-> **v4 核心修复（解决 macOS WKWebView `Load failed` 与 Wails `embed` 绑定报错）**：
-> - 桌面端全面升级为**纯进程内 Wails IPC 通信**（`APIRequest` + `OpenSSHSession/EventsEmit`），不再在桌面端监听本地 HTTP/WebSocket 端口，彻底杜绝 macOS WKWebView `Origin: null` CORS 拦截、ATS 限制与本地代理（Clash）干扰。
-> - 构建脚本默认启用 `wails build -skipbindings`，兼容各版本 Go 编译器与 Wails v2 CLI。
+基于 Go 构建的轻量级零信任 SSH 管理面板，提供 **Web 单文件版** 与 **macOS / Windows 原生桌面版**，支持 100% 离线运行。
 
----
+## 核心特性
 
-# SSH-Guard v3（纯离线内置终端 · 网页版 + macOS M4 / Windows 原生桌面版）
-
-基于 Go 构建的轻量级零信任 SSH 管理面板。v3 在双端架构基础上重点完成了**纯断网离线化、macOS M4 签名与原生快捷键体验、以及受限网络构建容错**。
-
-## v3 重点升级内容
-
-1. **100% 离线运行，彻底移除外部 CDN 依赖**
-   - `index.html` 所有样式与脚本全部改为本地 `/vendor/*` 并由 `go:embed static` 编译进二进制，Web 端同步开启严格 `Content-Security-Policy`（拦截第三方脚本）。
-   - 内置**双重保障**：
-     - 构建脚本自动通过多镜像（jsDelivr / unpkg / npmmirror）拉取官方 `@xterm/xterm@5.5.0` 与 `@xterm/addon-fit@0.10.0` 嵌入二进制（完整支持 `vim`、`htop`、`tmux` 全屏 TUI）。
-     - 即使在完全断网环境直接编译，项目已预置**零依赖纯原生 ANSI 终端引擎兜底**，解压即可直接编译运行，绝不白屏。
-2. **macOS M4 签名与 Gatekeeper 自动化 + 原生编辑菜单**
-   - `scripts/build-mac-m4.sh` 编译完成后自动执行 `xattr -cr` 清除隔离属性并完成 Ad-hoc 本地签名（也支持 `CODESIGN_IDENTITY="..."` 正式证书签名）。
-   - 提供独立工具 `scripts/fix-mac-gatekeeper.sh`，从 CI 或其他设备拷入 `.app` 后一行命令即可解决“无法验证开发者/已损坏”提示。
-   - `main.go` 为 macOS 注入原生 `AppMenu / EditMenu / WindowMenu`，彻底修复 Wails 在 macOS WebView 中 `Cmd+C / Cmd+V / Cmd+A` 快捷键失效的问题。
-3. **Go 依赖拉取多级代理容错**
-   - 构建脚本与 `Makefile` 默认启用 `GOPROXY=https://proxy.golang.org,https://goproxy.cn,direct`，避免直连拉取超时。
+- **零信任信封加密保险库**：主密码仅在内存中经 **Argon2id** 派生 KEK（永不落盘），每条主机凭据使用独立随机 DEK 与 **AES-256-GCM** 加密存入 SQLite；握手结束、手动锁定或退出应用时立即清零内存。
+- **纯进程内 IPC（桌面端零端口暴露）**：基于 Wails v2 原生桌面端通过进程内 IPC 与原生事件通道驱动 API 与 SSH 会话，不在本机监听任何 HTTP/WebSocket 端口，规避本地端口暴露、CORS 与代理软件干扰。
+- **100% 离线内置终端**：前端资源与 `xterm.js` 全部经 `go:embed` 静态嵌入二进制，无外部 CDN 依赖，支持 `vim`、`htop`、`tmux` 等全屏 TUI；Web 端默认启用严格 CSP 策略。
+- **TOFU + 防 MITM 主机指纹校验**：首次连接记录并核对服务器 SHA-256 公钥指纹，后续若指纹发生变化则立即阻断连接并记录 `CRITICAL` 级安全告警。
+- **高危命令实时拦截守卫**：在终端输入层实时检测并拦截 `rm -rf /`、`mkfs`、`dd of=/dev/...`、`chmod -R 777 /`、Fork 炸弹、`reboot/shutdown`、`iptables -F` 等高危操作。
+- **标准会话录像与回放**：自动以 `asciinema v2 (.cast)` 格式保存操作录像（跳过无回显密码输入），支持面板内直接倍速回放。
+- **零 CGO 纯 Go 构建**：采用纯 Go SQLite 驱动，支持跨平台交叉编译与低内存占用运行。
 
 ---
 
-## 一键构建与运行
+## 快速开始
 
-### macOS (Apple Silicon M4)
+### 环境要求
+
+- Go 1.22+
+- 如需编译桌面版，需要 [Wails v2 CLI](https://wails.io/)（构建脚本会自动检测并安装）
+
+### 克隆仓库
 
 ```bash
-unzip ssh-guard-v3.zip
-cd ssh-guard-v3
+git clone https://github.com/pandasir/ssh-guard.git
+cd ssh-guard
+```
 
-# 一键完成：离线 xterm.js 拉取 -> 测试 -> 网页版双平台编译 -> Mac M4 桌面端编译 -> 自动签名去隔离
+### 运行 Web 版
+
+```bash
+# 直接运行并自动打开浏览器（默认监听 127.0.0.1:8080）
+go run ./cmd/web -addr 127.0.0.1:8080 -data ./data -open
+```
+
+Web 版常用启动参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-addr` | `127.0.0.1:8080` | 监听地址（建议仅绑定回环地址或内网/Tailscale IP） |
+| `-data` | `./data` | SQLite 数据库与会话录像存储目录（也可通过 `SSH_GUARD_DATA_DIR` 指定） |
+| `-tls-cert` | `""` | TLS 证书路径（与 `-tls-key` 同时指定时启用 HTTPS/WSS） |
+| `-tls-key` | `""` | TLS 私钥路径 |
+| `-secure-cookie` | `false` | 为会话 Cookie 启用 `Secure` 标记（置于 HTTPS 反向代理后时建议开启） |
+| `-open` | `false` | 启动后自动使用默认浏览器打开面板 |
+
+---
+
+## 构建与打包
+
+### macOS (Apple Silicon)
+
+```bash
 chmod +x scripts/*.sh
+
+# 一键完成测试、Web 版编译、macOS 桌面端 (.app) 编译与 Ad-hoc 签名
 ./scripts/build-mac-m4.sh
 
-# 如需同时生成 .dmg 安装包：
+# 如需同时生成 .dmg 安装镜像
 MAKE_DMG=1 ./scripts/build-mac-m4.sh
 
 # 启动桌面版
 open build/bin/SSH-Guard.app
 
-# 或启动网页版（自动打开浏览器）
+# 或启动 Web 版
 ./bin/ssh-guard-web-darwin-arm64 -open
 ```
 
-> 若从 GitHub Actions 下载了 `SSH-Guard-Desktop-macOS-arm64.zip` 解压后首次打开遇到 macOS 安全拦截提示，执行：
+> 若从其他设备或 GitHub Actions 下载 `.app` 遇到 macOS Gatekeeper 拦截提示，可执行：
 > ```bash
 > ./scripts/fix-mac-gatekeeper.sh /路径/到/SSH-Guard.app
 > ```
 
-### 在 macOS 上交叉编译 Windows 安装包 (NSIS `.exe`)
-
-项目为纯 Go 无 CGO 依赖，可直接在 macOS 上交叉编译 Windows 桌面端及带安装向导的 NSIS 安装包：
+### macOS 交叉编译 Windows 桌面端与 NSIS 安装包
 
 ```bash
-# 首次打包需安装 NSIS 工具
+# 安装 NSIS 打包工具
 brew install makensis
 
-# 确保 Wails CLI 在 PATH 中（或直接使用 $(go env GOPATH)/bin/wails）
 export PATH="$(go env GOPATH)/bin:$PATH"
 
-# 编译 Windows 桌面端并生成带安装向导的 NSIS 安装包（不加 -clean 可保留已有的 macOS .app）
+# 生成绿色单文件与带安装向导的 NSIS 安装包
 wails build -skipbindings -platform windows/amd64 -nsis
 ```
 
-编译完成后产物位于 `build/bin/` 目录：
-- `build/bin/SSH-Guard-amd64-installer.exe`：带安装向导、快捷方式与卸载程序的标准安装包
+产物位置：
+- `build/bin/SSH-Guard-amd64-installer.exe`：带安装向导、快捷方式与卸载程序的安装包
 - `build/bin/ssh-guard.exe`：免安装绿色单文件桌面版
 
 ### Windows (PowerShell)
 
 ```powershell
-Expand-Archive ssh-guard-v3.zip -DestinationPath .
-cd ssh-guard-v3
-
-# 一键完成：离线 xterm.js 拉取 -> 测试 -> 网页版双平台编译 -> Windows 原生桌面端 (.exe) 编译
+# 一键完成测试、Web 版与 Windows 原生桌面版 (.exe) 编译
 .\scripts\build-windows.ps1
 
 # 启动桌面版
 .\build\bin\ssh-guard.exe
 
-# 或启动网页版
+# 或启动 Web 版
 .\bin\ssh-guard-web-windows-amd64.exe -open
 ```
 
-### GitHub Actions 云端同时打包双平台
+### Makefile 快捷命令
 
-推送到私有 GitHub 仓库后，在 Actions 页面运行 `Build Offline Web & Desktop (Mac M4 + Windows)`，云端会自动下载官方 `xterm.js` 并打包进二进制，一次性产出 Mac M4 `.app`、Windows `.exe` 与全平台网页版。
+```bash
+make test                    # 运行单元测试
+make run-web                 # 启动本地 Web 版
+make build-web-all           # 交叉编译 macOS / Windows / Linux Web 版
+make build-desktop-mac-m4    # 编译 macOS ARM64 桌面端
+make build-desktop-win-nsis  # 编译 Windows 桌面端与 NSIS 安装包
+make clean                   # 清理构建产物
+```
+
+### GitHub Actions 云端构建
+
+仓库内置 [.github/workflows/build-release.yml](.github/workflows/build-release.yml)，支持在 GitHub **Actions** 页面手动触发，或在推送 `v*` 标签时自动构建 macOS 桌面版、Windows 桌面版与多平台 Web 版产物。
 
 ---
 
-## 安全特性回顾
+## 项目结构
 
-- **信封加密凭证保险库**：主密码仅在内存中经 **Argon2id** 派生 KEK（永不落盘），每条凭据用独立随机 DEK + **AES-256-GCM** 加密存储；握手结束、手动锁定或关闭应用立即 `Zeroize` 清零内存。
-- **桌面端本地环回隔离**：绑定 `127.0.0.1:0` 随机端口 + 每次启动随机 256-bit `DesktopSecret`（仅通过 Wails IPC 下发）。
-- **TOFU + 严格防 MITM**：首次连接核对 SHA-256 指纹，后续指纹变更立即阻断并记录 `CRITICAL` 级告警。
-- **高危命令拦截守卫**：实时拦截 `rm -rf /`、`mkfs`、`dd of=/dev/...`、`chmod -R 777 /`、`reboot/shutdown`、`iptables -F`。
-- **标准会话录像与回放**：自动保存 `asciinema v2 (.cast)` 录像（不录无回显密码），支持内置倍速回放。
+```text
+.
+├── main.go                     # Wails 原生桌面端入口（进程内 IPC 与事件桥接）
+├── cmd/web/main.go             # Web 单二进制服务端入口
+├── internal/
+│   ├── api/                    # HTTP REST API、CSP 与安全中间件
+│   ├── auth/                   # 会话令牌与认证管理
+│   ├── crypto/                 # Argon2id KEK + AES-256-GCM 信封加密保险库
+│   ├── sshproxy/               # SSH 代理、TOFU 指纹校验、高危命令守卫与会话录像
+│   └── store/                  # 纯 Go SQLite 持久化层
+├── web/
+│   ├── embed.go                # 静态资源嵌入（go:embed）
+│   └── static/                 # 前端页面与离线内置 xterm.js
+├── scripts/                    # 跨平台构建、离线资源拉取与签名脚本
+└── build/                      # Wails 应用图标、清单与安装包模板
+```
+
+---
+
+## 数据目录与安全建议
+
+- **桌面端默认数据目录**：系统用户配置目录下的 `SSH-Guard/`（macOS 为 `~/Library/Application Support/SSH-Guard`，Windows 为 `%AppData%\SSH-Guard`），可通过环境变量 `SSH_GUARD_DATA_DIR` 覆盖。
+- **Web 端默认数据目录**：`./data`（可通过 `-data` 或 `SSH_GUARD_DATA_DIR` 修改）。
+- **部署建议**：使用 Web 版时建议仅绑定 `127.0.0.1` 或配合 Tailscale / WireGuard / Nginx HTTPS 反向代理使用，避免明文暴露在公网。
+
+---
+
+## License
+
+本项目采用 [MIT License](LICENSE) 开源。

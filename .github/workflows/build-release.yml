@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
       - name: Bundle Offline xterm.js
         run: chmod +x scripts/fetch-vendor.sh && ./scripts/fetch-vendor.sh
       - name: Run Unit Tests
@@ -41,12 +41,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
       - name: Bundle Offline xterm.js
         run: chmod +x scripts/fetch-vendor.sh scripts/fix-mac-gatekeeper.sh && ./scripts/fetch-vendor.sh
       - name: Install Wails v2 CLI
         run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.2
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Build, Sign & Package macOS DMG
         run: |
@@ -85,14 +85,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.26"
       - name: Bundle Offline xterm.js
         shell: pwsh
         run: .\scripts\fetch-vendor.ps1
       - name: Install Wails v2 CLI & Ensure NSIS
         shell: pwsh
         run: |
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.9.2
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
           $GoBin = Join-Path (go env GOPATH) "bin"
           Add-Content -Path $env:GITHUB_PATH -Value $GoBin
 
@@ -109,6 +109,7 @@ jobs:
           makensis -VERSION
           go mod tidy
           wails build -skipbindings -clean -platform windows/amd64 -nsis
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           New-Item -ItemType Directory -Force -Path release-win | Out-Null
           Copy-Item -Force "build\bin\SSH-Guard-amd64-installer.exe" "release-win\SSH-Guard-Windows-amd64-installer.exe"

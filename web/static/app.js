@@ -7,10 +7,9 @@ const state = {
   initialized: false,
   hosts: [],
   activeHostId: null,
-  activeDesktopSessionId: null,
-  ws: null,
-  term: null,
-  fitAddon: null,
+  sessions: [],
+  activeSessionId: null,
+  sessionSeq: 0,
   pendingTofu: null,
   replayTimer: null,
   replayTerm: null,
@@ -35,13 +34,14 @@ async function detectRuntime() {
     // Register global Wails SSH event listener once
     if (window.runtime && typeof window.runtime.EventsOn === "function") {
       window.runtime.EventsOn("ssh:event", (payload) => {
-        if (!payload || payload.session_id !== state.activeDesktopSessionId) return;
-        const host = state.hosts.find((h) => h.id === state.activeHostId);
+        if (!payload) return;
+        const sess = state.sessions.find((s) => s.desktopSessionId === payload.session_id);
+        if (!sess) return;
         if (payload.event === "msg" && payload.msg) {
-          handleSSHMessage(state.activeHostId, host, payload.msg);
+          handleSSHMessage(sess, payload.msg);
         } else if (payload.event === "closed") {
-          state.activeDesktopSessionId = null;
-          setConnStatus("idle", `会话已断开 · ${host ? host.name : ""}`);
+          sess.desktopSessionId = null;
+          setSessionStatus(sess, "idle", `会话已断开 · ${sess.host.name}`);
         }
       });
     }
@@ -107,7 +107,7 @@ async function initApp() {
 }
 
 function showVaultScreen() {
-  disconnectSession();
+  closeAllSessions();
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("vault-screen").classList.remove("hidden");
   const title = document.getElementById("vault-title");
@@ -211,7 +211,9 @@ function renderHosts() {
   }
   container.innerHTML = state.hosts.map((h) => {
     const isKey = h.auth_type === "private_key";
-    const activeCls = state.activeHostId === h.id ? "active" : "";
+    const activeSess = getActiveSession();
+    const activeCls = activeSess && activeSess.hostId === h.id ? "active" : "";
+    const openCount = state.sessions.filter((s) => s.hostId === h.id).length;
     const guardTag = h.guard_enabled ? "🛡️" : "";
     const fpTag = h.known_host_fp ? "已绑定指纹" : "待首次验证";
     return `
@@ -221,7 +223,7 @@ function renderHosts() {
           <span class="badge ${isKey ? "badge-key" : "badge-pw"}">${isKey ? "公私钥" : "密码"}</span>
         </div>
         <div class="host-addr">${escapeHTML(h.username)}@${escapeHTML(h.address)}:${h.port}</div>
-        <div class="muted small" style="margin-bottom:8px;">${fpTag}</div>
+        <div class="muted small" style="margin-bottom:8px;">${fpTag}${openCount ? ` · 已开 ${openCount} 个会话` : ""}</div>
         <div class="host-actions">
           <button class="btn btn-primary btn-sm" onclick="connectHost(${h.id})">连接</button>
           <button class="btn btn-ghost btn-sm" onclick="openEditHost(${h.id})">编辑</button>
@@ -315,63 +317,257 @@ document.getElementById("host-form").addEventListener("submit", async (e) => {
 
 window.deleteHost = async function (id) {
   if (!confirm("确认删除该主机及其加密凭据？")) return;
-  if (state.activeHostId === id) disconnectSession();
+  for (const sess of state.sessions.filter((s) => s.hostId === id)) {
+    closeSession(sess.id);
+  }
   await api(`/api/hosts/${id}`, { method: "DELETE" });
   await loadHosts();
 };
 
-// --- SSH Terminal (IPC in Desktop / WebSocket in Web) ---
+// --- SSH Session Tabs (IPC in Desktop / WebSocket in Web) ---
 
-function sendTerminalPayload(obj) {
+function getSession(id) {
+  return state.sessions.find((s) => s.id === id) || null;
+}
+
+function getActiveSession() {
+  return getSession(state.activeSessionId);
+}
+
+function newSessionId() {
+  state.sessionSeq += 1;
+  return `s${state.sessionSeq}`;
+}
+
+function setSessionStatus(sess, status, text) {
+  if (!sess) return;
+  sess.status = status;
+  sess.statusText = text;
+  if (sess.id === state.activeSessionId) {
+    setConnStatus(status, text);
+  }
+  renderTabs();
+}
+
+function renderTabs() {
+  const bar = document.getElementById("session-tabs");
+  if (!bar) return;
+  if (!state.sessions.length) {
+    bar.innerHTML = "";
+    return;
+  }
+  const counts = new Map();
+  bar.innerHTML = state.sessions.map((s) => {
+    const host = s.host || {};
+    const seen = (counts.get(s.hostId) || 0) + 1;
+    counts.set(s.hostId, seen);
+    const label = `${host.name || "SSH"}${seen > 1 ? ` #${seen}` : ""}`;
+    const cur = s.id === state.activeSessionId ? " active" : "";
+    const title = `${host.username || ""}@${host.address || ""}:${host.port || 22}`;
+    return `<div class="session-tab${cur}" data-sess="${s.id}" title="${escapeHTML(title)}">
+      <span class="dot dot-${s.status || "idle"}"></span>
+      <span class="tab-label">${escapeHTML(label)}</span>
+      <span class="tab-close" data-close="${s.id}" title="关闭会话">×</span>
+    </div>`;
+  }).join("");
+}
+
+function updateSessionChrome() {
+  const has = state.sessions.length > 0;
+  const emptyEl = document.getElementById("terminal-empty");
+  if (emptyEl) emptyEl.classList.toggle("hidden", has);
+  const tabsEl = document.getElementById("session-tabs");
+  if (tabsEl) tabsEl.classList.toggle("hidden", !has);
+  const termEl = document.getElementById("terminal-container");
+  if (termEl) termEl.classList.toggle("hidden", !has);
+  document.getElementById("btn-disconnect").classList.toggle("hidden", !getActiveSession());
+  const sess = getActiveSession();
+  if (sess) {
+    setConnStatus(sess.status || "idle", sess.statusText || "");
+  } else {
+    setConnStatus("idle", "未连接 · 请从左侧选择主机");
+  }
+}
+
+function fitSession(sess) {
+  if (!sess || !sess.fitAddon) return;
+  if (sess.paneEl && sess.paneEl.classList.contains("hidden")) return;
+  try {
+    sess.fitAddon.fit();
+  } catch (_) {}
+  scheduleGutter(sess);
+}
+
+function activateSession(id) {
+  const sess = getSession(id);
+  if (!sess) return;
+  state.activeSessionId = id;
+  for (const s of state.sessions) {
+    if (s.paneEl) s.paneEl.classList.toggle("hidden", s.id !== id);
+  }
+  renderTabs();
+  updateSessionChrome();
+  renderHosts();
+  requestAnimationFrame(() => {
+    const cur = getActiveSession();
+    if (!cur || cur.id !== id) return;
+    fitSession(cur);
+    if (cur.term) cur.term.focus();
+  });
+}
+
+function closeSession(id) {
+  const idx = state.sessions.findIndex((s) => s.id === id);
+  if (idx < 0) return;
+  const sess = state.sessions[idx];
+  sess.closing = true;
+  if (sess.gutterRaf) {
+    cancelAnimationFrame(sess.gutterRaf);
+    sess.gutterRaf = 0;
+  }
+  if (sess.ws) {
+    try { sess.ws.close(); } catch (_) {}
+    sess.ws = null;
+  }
+  if (sess.desktopSessionId) {
+    const oldId = sess.desktopSessionId;
+    sess.desktopSessionId = null;
+    if (window.go?.main?.DesktopApp?.CloseSSHSession) {
+      window.go.main.DesktopApp.CloseSSHSession(oldId).catch(() => {});
+    }
+  }
+  if (sess.term) {
+    try { sess.term.dispose(); } catch (_) {}
+    sess.term = null;
+  }
+  if (sess.paneEl && sess.paneEl.parentElement) {
+    sess.paneEl.parentElement.removeChild(sess.paneEl);
+  }
+  state.sessions.splice(idx, 1);
+  if (state.activeSessionId === id) {
+    const next = state.sessions[Math.min(idx, state.sessions.length - 1)];
+    state.activeSessionId = next ? next.id : null;
+    if (next) {
+      activateSession(next.id);
+      return;
+    }
+  }
+  renderTabs();
+  updateSessionChrome();
+  renderHosts();
+}
+
+function closeAllSessions() {
+  for (const sess of state.sessions.slice()) closeSession(sess.id);
+  state.activeSessionId = null;
+  renderTabs();
+  updateSessionChrome();
+}
+
+function sendSessionPayload(sess, obj) {
+  if (!sess) return;
   const raw = JSON.stringify(obj);
   if (state.isDesktop) {
-    if (state.activeDesktopSessionId && window.go?.main?.DesktopApp?.SendSSHMessage) {
-      window.go.main.DesktopApp.SendSSHMessage(state.activeDesktopSessionId, raw).catch(() => {});
+    if (sess.desktopSessionId && window.go?.main?.DesktopApp?.SendSSHMessage) {
+      window.go.main.DesktopApp.SendSSHMessage(sess.desktopSessionId, raw).catch(() => {});
     }
-  } else if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(raw);
+  } else if (sess.ws && sess.ws.readyState === WebSocket.OPEN) {
+    sess.ws.send(raw);
   }
 }
 
 window.addEventListener("resize", () => {
-  if (!state.fitAddon || !state.term) return;
-  state.fitAddon.fit();
-  sendTerminalPayload({
-    type: "resize",
-    cols: state.term.cols,
-    rows: state.term.rows,
-  });
+  fitSession(getActiveSession());
 });
 
-function disposeTerminal() {
-  if (state.term) {
-    try {
-      state.term.dispose();
-    } catch (_) {}
-    state.term = null;
-  }
-  state.fitAddon = null;
-  const container = document.getElementById("terminal-container");
-  if (container) {
-    container.innerHTML = "";
-    container.classList.add("hidden");
-  }
-  const emptyEl = document.getElementById("terminal-empty");
-  if (emptyEl) {
-    emptyEl.classList.remove("hidden");
-  }
+// --- 终端左侧时间 / 行号栏 ---
+
+function formatClock(date) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function ensureTerminal() {
-  if (state.term) {
-    try {
-      state.term.dispose();
-    } catch (_) {}
-    state.term = null;
-    state.fitAddon = null;
+function scheduleGutter(sess) {
+  if (!sess || sess.gutterRaf) return;
+  sess.gutterRaf = requestAnimationFrame(() => {
+    sess.gutterRaf = 0;
+    renderTerminalGutter(sess);
+  });
+}
+
+function renderTerminalGutter(sess) {
+  if (!sess) return;
+  const gutter = sess.gutterEl;
+  const term = sess.term;
+  if (!gutter || !term || !term.element) return;
+  if (sess.paneEl && sess.paneEl.classList.contains("hidden")) return;
+  const screenEl = term.element.querySelector(".xterm-screen");
+  const hostEl = gutter.parentElement;
+  if (!screenEl || !hostEl) return;
+  const screenRect = screenEl.getBoundingClientRect();
+  if (screenRect.height <= 0) return;
+  const hostRect = hostEl.getBoundingClientRect();
+  const cellH = screenRect.height / term.rows;
+  gutter.style.paddingTop = `${Math.max(0, screenRect.top - hostRect.top)}px`;
+  gutter.style.setProperty("--gutter-cell-h", `${cellH}px`);
+
+  const buf = term.buffer.active;
+  const topAbs = buf.viewportY;
+  const curAbs = buf.baseY + buf.cursorY;
+  const nums = new Map();
+  let countNow = 0;
+  for (let abs = 0; abs <= curAbs; abs++) {
+    const line = buf.getLine(abs);
+    if (line && !line.isWrapped) {
+      nums.set(abs, countNow);
+      countNow += 1;
+    }
   }
-  const container = document.getElementById("terminal-container");
-  container.innerHTML = "";
+
+  const stamps = sess.gutterStamps;
+  if (countNow > stamps.length) {
+    const now = formatClock(new Date());
+    while (stamps.length < countNow) stamps.push(now);
+  } else if (countNow < stamps.length) {
+    const removed = stamps.length - countNow;
+    stamps.splice(0, removed);
+    sess.gutterDropped += removed;
+  }
+
+  const parts = [];
+  for (let r = 0; r < term.rows; r++) {
+    const abs = topAbs + r;
+    const line = abs <= curAbs ? buf.getLine(abs) : null;
+    if (!line || line.isWrapped || !nums.has(abs)) {
+      parts.push('<div class="gutter-row"></div>');
+      continue;
+    }
+    const idx = nums.get(abs);
+    const time = stamps[idx] || "";
+    const lineNo = sess.gutterDropped + idx + 1;
+    const curClass = abs === curAbs ? " gutter-row-cur" : "";
+    parts.push(
+      `<div class="gutter-row${curClass}"><span class="gutter-time">${time}</span>` +
+        `<span class="gutter-no">${lineNo}</span></div>`
+    );
+  }
+  gutter.innerHTML = parts.join("");
+}
+
+function createSessionTerminal(sess, paneEl) {
+  const body = document.createElement("div");
+  body.className = "terminal-body";
+  const gutter = document.createElement("div");
+  gutter.className = "term-gutter";
+  const xtermHost = document.createElement("div");
+  xtermHost.className = "terminal-xterm";
+  body.appendChild(gutter);
+  body.appendChild(xtermHost);
+  paneEl.appendChild(body);
+
+  sess.gutterEl = gutter;
+  sess.gutterStamps = [];
+  sess.gutterDropped = 0;
 
   const term = new Terminal({
     cursorBlink: false,
@@ -386,44 +582,51 @@ function ensureTerminal() {
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
-  term.open(container);
-  fitAddon.fit();
+  term.open(xtermHost);
+  sess.term = term;
+  sess.fitAddon = fitAddon;
 
   term.onData((data) => {
-    sendTerminalPayload({ type: "input", data });
+    sendSessionPayload(sess, { type: "input", data });
   });
-
-  state.term = term;
-  state.fitAddon = fitAddon;
+  term.onScroll(() => scheduleGutter(sess));
+  term.onRender(() => scheduleGutter(sess));
+  term.onResize((size) => {
+    scheduleGutter(sess);
+    sendSessionPayload(sess, { type: "resize", cols: size.cols, rows: size.rows });
+  });
+  fitSession(sess);
 }
 
-function handleSSHMessage(hostId, host, msg) {
+function handleSSHMessage(sess, msg) {
+  if (!sess || !sess.term) return;
+  const host = sess.host || {};
   switch (msg.type) {
     case "output":
-      if (state.term) state.term.write(msg.data);
+      sess.term.write(msg.data);
       break;
     case "guard_blocked":
-      if (state.term) state.term.write(msg.data);
+      sess.term.write(msg.data);
       break;
     case "status":
       if (msg.data === "CONNECTED") {
-        setConnStatus("connected", `已连接 · ${host ? host.name : ""} (${host ? `${host.username}@${host.address}:${host.port}` : ""})`);
-        if (state.term) state.term.focus();
+        setSessionStatus(sess, "connected", `已连接 · ${host.name || ""} (${host.username || ""}@${host.address || ""}:${host.port || 22})`);
+        if (sess.id === state.activeSessionId) sess.term.focus();
       } else {
-        if (state.term) state.term.writeln(`\x1b[36m[SSH-Guard]\x1b[0m ${msg.data}`);
+        sess.term.writeln(`\x1b[36m[SSH-Guard]\x1b[0m ${msg.data}`);
       }
       break;
     case "host_key_verify":
-      openTofuModal(hostId, msg, false);
-      setConnStatus("error", "等待首次指纹信任 (TOFU)");
+      openTofuModal(sess, msg, false);
+      setSessionStatus(sess, "error", "等待首次指纹信任 (TOFU)");
       break;
     case "host_key_mismatch":
-      openTofuModal(hostId, msg, true);
-      setConnStatus("error", "安全阻断：检测到主机公钥变更 (疑似 MITM)");
+      openTofuModal(sess, msg, true);
+      setSessionStatus(sess, "error", "安全阻断：检测到主机公钥变更 (疑似 MITM)");
       break;
     case "error":
-      if (state.term) state.term.writeln(`\r\n\x1b[1;31m[错误]\x1b[0m ${msg.data}`);
-      setConnStatus("error", `连接失败 · ${host ? host.name : ""}`);
+      sess.term.writeln(`\r\n\x1b[1;31m[错误]\x1b[0m ${msg.data}`);
+      setSessionStatus(sess, "error", `连接失败 · ${host.name || ""}`);
       break;
   }
 }
@@ -432,78 +635,91 @@ window.connectHost = async function (hostId) {
   const host = state.hosts.find((h) => h.id === hostId);
   if (!host) return;
 
-  disconnectSession();
-  state.activeHostId = hostId;
-  renderHosts();
+  const sess = {
+    id: newSessionId(),
+    hostId,
+    host: Object.assign({}, host),
+    status: "connecting",
+    statusText: "",
+    ws: null,
+    desktopSessionId: null,
+    closing: false,
+    term: null,
+    fitAddon: null,
+    paneEl: null,
+    gutterEl: null,
+    gutterStamps: [],
+    gutterDropped: 0,
+    gutterRaf: 0,
+  };
+  state.sessions.push(sess);
 
-  document.getElementById("terminal-empty").classList.add("hidden");
-  document.getElementById("terminal-container").classList.remove("hidden");
-  document.getElementById("btn-disconnect").classList.remove("hidden");
-  setConnStatus("connecting", `正在连接 ${host.name} (${host.username}@${host.address}:${host.port})`);
+  const paneEl = document.createElement("div");
+  paneEl.className = "terminal-pane";
+  document.getElementById("terminal-container").appendChild(paneEl);
+  sess.paneEl = paneEl;
 
-  ensureTerminal();
-  state.fitAddon.fit();
+  updateSessionChrome();
+  createSessionTerminal(sess, paneEl);
+  activateSession(sess.id);
+  setSessionStatus(sess, "connecting", `正在连接 ${host.name} (${host.username}@${host.address}:${host.port})`);
 
   if (state.isDesktop) {
     const sessID = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    state.activeDesktopSessionId = sessID;
+    sess.desktopSessionId = sessID;
     try {
       await window.go.main.DesktopApp.OpenSSHSession(
         sessID,
         hostId,
-        state.term.cols,
-        state.term.rows,
+        sess.term.cols,
+        sess.term.rows,
         state.sessionToken
       );
     } catch (err) {
-      state.activeDesktopSessionId = null;
-      state.term.writeln(`\r\n\x1b[1;31m[错误]\x1b[0m ${err}`);
-      setConnStatus("error", `连接失败 · ${host.name}`);
+      sess.desktopSessionId = null;
+      sess.term.writeln(`\r\n\x1b[1;31m[错误]\x1b[0m ${err}`);
+      setSessionStatus(sess, "error", `连接失败 · ${host.name}`);
     }
     return;
   }
 
   const params = new URLSearchParams({
-    cols: String(state.term.cols),
-    rows: String(state.term.rows),
+    cols: String(sess.term.cols),
+    rows: String(sess.term.rows),
   });
   const wsUrl = `${state.wsBase}/ws/ssh/${hostId}?${params.toString()}`;
   const ws = new WebSocket(wsUrl);
-  state.ws = ws;
+  sess.ws = ws;
 
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    handleSSHMessage(hostId, host, msg);
+    let msg = null;
+    try { msg = JSON.parse(ev.data); } catch (_) { return; }
+    handleSSHMessage(sess, msg);
   };
 
   ws.onclose = () => {
-    if (state.ws === ws) {
-      state.ws = null;
-      setConnStatus("idle", `会话已断开 · ${host.name}`);
-    }
+    if (sess.closing) return;
+    if (sess.ws === ws) sess.ws = null;
+    if (sess.term) sess.term.writeln(`\r\n\x1b[36m[SSH-Guard]\x1b[0m 会话已断开`);
+    setSessionStatus(sess, "idle", `会话已断开 · ${host.name}`);
   };
 };
 
-function disconnectSession() {
-  if (state.isDesktop && state.activeDesktopSessionId) {
-    const oldId = state.activeDesktopSessionId;
-    state.activeDesktopSessionId = null;
-    if (window.go?.main?.DesktopApp?.CloseSSHSession) {
-      window.go.main.DesktopApp.CloseSSHSession(oldId).catch(() => {});
-    }
+document.getElementById("session-tabs").addEventListener("click", (e) => {
+  const closeEl = e.target.closest("[data-close]");
+  if (closeEl) {
+    e.stopPropagation();
+    closeSession(closeEl.getAttribute("data-close"));
+    return;
   }
-  if (state.ws) {
-    state.ws.close();
-    state.ws = null;
-  }
-  disposeTerminal();
-  state.activeHostId = null;
-  document.getElementById("btn-disconnect").classList.add("hidden");
-  setConnStatus("idle", "未连接 · 请从左侧选择主机");
-  renderHosts();
-}
+  const tabEl = e.target.closest("[data-sess]");
+  if (tabEl) activateSession(tabEl.getAttribute("data-sess"));
+});
 
-document.getElementById("btn-disconnect").addEventListener("click", disconnectSession);
+document.getElementById("btn-disconnect").addEventListener("click", () => {
+  const sess = getActiveSession();
+  if (sess) closeSession(sess.id);
+});
 
 function setConnStatus(status, label) {
   const dot = document.getElementById("conn-dot");
@@ -513,8 +729,8 @@ function setConnStatus(status, label) {
 
 // --- TOFU & MITM Modal ---
 
-function openTofuModal(hostId, msg, isMismatch) {
-  state.pendingTofu = { hostId, msg };
+function openTofuModal(sess, msg, isMismatch) {
+  state.pendingTofu = { sessionId: sess.id, hostId: sess.hostId, msg };
   const titleEl = document.getElementById("tofu-title");
   const msgEl = document.getElementById("tofu-message");
   const expWrap = document.getElementById("tofu-expected-wrap");
@@ -542,7 +758,8 @@ function openTofuModal(hostId, msg, isMismatch) {
 
 document.getElementById("btn-tofu-trust").addEventListener("click", async () => {
   if (!state.pendingTofu) return;
-  const { hostId, msg } = state.pendingTofu;
+  const { sessionId, hostId, msg } = state.pendingTofu;
+  state.pendingTofu = null;
   await api(`/api/hosts/${hostId}/trust-key`, {
     method: "POST",
     body: JSON.stringify({
@@ -553,6 +770,7 @@ document.getElementById("btn-tofu-trust").addEventListener("click", async () => 
   });
   closeModal("tofu-modal");
   await loadHosts();
+  closeSession(sessionId);
   connectHost(hostId);
 });
 

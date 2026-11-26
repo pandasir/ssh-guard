@@ -209,9 +209,12 @@ label {
   background: #0a0d12;
   padding: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .terminal-empty {
-  height: 100%;
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -227,7 +230,92 @@ label {
 }
 .terminal-empty h2 { margin: 0 0 6px; font-size: 17px; color: var(--text); }
 .terminal-empty p { margin: 0; font-size: 13px; max-width: 440px; }
-.terminal-container { width: 100%; height: 100%; }
+.session-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.session-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.session-tab:hover { background: var(--panel-2); }
+.session-tab.active {
+  color: var(--text);
+  border-color: var(--primary);
+  background: var(--panel-2);
+}
+.session-tab .dot { flex: 0 0 auto; }
+.session-tab .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-tab .tab-close {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.session-tab .tab-close:hover { background: rgba(248, 81, 73, 0.25); color: #ff7b72; }
+.terminal-container { flex: 1; min-height: 0; width: 100%; }
+.terminal-pane { width: 100%; height: 100%; }
+.terminal-body {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.terminal-xterm {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.term-gutter {
+  --gutter-cell-h: 17px;
+  flex: 0 0 auto;
+  width: 100px;
+  padding: 0 6px 0 2px;
+  margin-right: 8px;
+  border-right: 1px solid #1b2230;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: var(--gutter-cell-h);
+  color: #566173;
+  text-align: right;
+  user-select: none;
+}
+.gutter-row {
+  height: var(--gutter-cell-h);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+.gutter-time { color: #454f5e; }
+.gutter-no { display: inline-block; min-width: 20px; color: #616c7d; }
+.gutter-row-cur .gutter-no { color: #8ab4f8; }
 
 /* Modals */
 .modal {

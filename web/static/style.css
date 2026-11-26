@@ -293,13 +293,14 @@ label {
 .term-gutter {
   --gutter-cell-h: 17px;
   flex: 0 0 auto;
-  width: 100px;
-  padding: 0 6px 0 2px;
+  width: 114px;
+  padding: 0 6px 0 4px;
   margin-right: 8px;
   border-right: 1px solid #1b2230;
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   line-height: var(--gutter-cell-h);
   color: #566173;
   text-align: right;
@@ -314,7 +315,7 @@ label {
   white-space: nowrap;
 }
 .gutter-time { color: #454f5e; }
-.gutter-no { display: inline-block; min-width: 20px; color: #616c7d; }
+.gutter-no { display: inline-block; min-width: 28px; color: #616c7d; }
 .gutter-row-cur .gutter-no { color: #8ab4f8; }
 
 /* Modals */

@@ -3,39 +3,53 @@ set -euo pipefail
 
 # 自动启用多级 Go 模块代理（解决直连超时问题；如已自定义 GOPROXY 则沿用）
 export GOPROXY="${GOPROXY:-https://proxy.golang.org,https://goproxy.cn,direct}"
-export PATH="$(go env GOPATH)/bin:$PATH"
 
-echo "=== [1/5] 准备离线内置 xterm.js 前端资源 ==="
+echo "=== [1/5] 准备离线 Web 版内置 xterm.js 资源 ==="
 chmod +x scripts/fetch-vendor.sh scripts/fix-mac-gatekeeper.sh
 ./scripts/fetch-vendor.sh
 
-echo "=== [2/5] 同步 Go 依赖并运行单元测试 (GOPROXY=${GOPROXY}) ==="
-go mod tidy
-go test -v ./internal/...
+echo "=== [2/5] 运行单元测试与 MyGo UI 静态检查 ==="
+go test -v -race ./...
+go tool mygo vet .
 
-echo "=== [3/5] 编译纯离线网页版单二进制 (macOS M4 arm64 + Windows amd64) ==="
+echo "=== [3/5] 编译纯离线网页版单二进制 (macOS arm64 + Windows amd64) ==="
 mkdir -p bin
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o bin/ssh-guard-web-darwin-arm64 ./cmd/web
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/ssh-guard-web-windows-amd64.exe ./cmd/web
 
-echo "=== [4/5] 检查并编译 macOS Apple Silicon (M4) 原生桌面版 .app ==="
-if ! command -v wails >/dev/null 2>&1; then
-  echo "未检测到 wails，正在自动安装 Wails v2 CLI..."
-  go install github.com/wailsapp/wails/v2/cmd/wails@latest
+echo "=== [4/5] 编译 macOS Apple Silicon 原生桌面版 (.app + .dmg, macOS 13+) ==="
+SIGN_ID="${CODESIGN_IDENTITY:--}"
+BUILD_ARGS=(-platform darwin/arm64 -sign "$SIGN_ID")
+if [ "${SKIP_DMG:-0}" = "1" ]; then
+  BUILD_ARGS+=(-skip-dmg)
 fi
-wails build -skipbindings -clean -platform darwin/arm64
+go tool mygo build "${BUILD_ARGS[@]}"
 
-echo "=== [5/5] 执行 macOS Ad-hoc 签名并清除 Quarantine 隔离标记 ==="
-./scripts/fix-mac-gatekeeper.sh "build/bin/SSH-Guard.app"
+APP_PATH="dist/mygo/darwin-arm64/SSH-Guard.app"
 
-if [ "${MAKE_DMG:-0}" = "1" ]; then
-  echo "=== [附加] 打包 macOS .dmg 安装镜像 ==="
-  rm -f bin/SSH-Guard-macOS-M4.dmg
-  hdiutil create -volname "SSH-Guard" -srcfolder "build/bin/SSH-Guard.app" -ov -format UDZO "bin/SSH-Guard-macOS-M4.dmg"
+echo "=== [5/5] 校验 Info.plist、libghostty-vt.dylib 与严格代码签名 ==="
+xattr -cr "$APP_PATH"
+MIN_VER="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_PATH/Contents/Info.plist")"
+if [ "$MIN_VER" != "13.0" ]; then
+  echo "ERROR: expected LSMinimumSystemVersion=13.0, got ${MIN_VER}" >&2
+  exit 1
+fi
+if [ ! -f "$APP_PATH/Contents/Resources/libghostty-vt.dylib" ]; then
+  echo "ERROR: missing bundled libghostty-vt.dylib in $APP_PATH/Contents/Resources/" >&2
+  exit 1
+fi
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+DMG_SRC="$(find dist/mygo/darwin-arm64 -maxdepth 1 -name '*.dmg' | head -n 1 || true)"
+if [ -n "$DMG_SRC" ] && [ "${MAKE_DMG:-1}" = "1" ]; then
+  cp -f "$DMG_SRC" bin/SSH-Guard-macOS-arm64.dmg
 fi
 
 echo ""
-echo "✅ 全部构建完成（100% 离线内置终端，无外部 CDN 依赖）："
-echo "  - macOS M4 桌面版 App : build/bin/SSH-Guard.app"
-echo "  - macOS M4 网页版     : bin/ssh-guard-web-darwin-arm64"
-echo "  - Windows  网页版     : bin/ssh-guard-web-windows-amd64.exe"
+echo "✅ 全部构建完成（原生 MyGo + Ghostty 终端，零 WebView）："
+echo "  - macOS ARM64 桌面版 App : ${APP_PATH}"
+if [ -n "$DMG_SRC" ]; then
+  echo "  - macOS ARM64 安装镜像   : ${DMG_SRC}"
+fi
+echo "  - macOS ARM64 网页版     : bin/ssh-guard-web-darwin-arm64"
+echo "  - Windows amd64 网页版   : bin/ssh-guard-web-windows-amd64.exe"

@@ -1,9 +1,5 @@
 const state = {
-  isDesktop: false,
-  wsBase: "",
-  sessionToken: "",
-  platform: "",
-  dataDir: "",
+  wsBase: `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`,
   initialized: false,
   hosts: [],
   sessions: [],
@@ -16,51 +12,7 @@ const state = {
   replayPaused: false,
 };
 
-async function detectRuntime() {
-  if (window.go && window.go.main && window.go.main.DesktopApp && typeof window.go.main.DesktopApp.APIRequest === "function") {
-    const cfg = await window.go.main.DesktopApp.GetRuntimeConfig();
-    state.isDesktop = true;
-    state.platform = cfg.platform || "";
-    state.dataDir = cfg.data_dir || "";
-
-    document.getElementById("runtime-badge").textContent = `DESKTOP · ${state.platform.toUpperCase()}`;
-    document.getElementById("sidebar-mode-pill").textContent = "DESKTOP";
-    document.getElementById("btn-pick-key").classList.remove("hidden");
-    document.getElementById("btn-open-data").classList.remove("hidden");
-    const platEl = document.getElementById("platform-label");
-    platEl.textContent = `本地桌面端 · 纯进程内 IPC (${state.platform})`;
-    platEl.classList.remove("hidden");
-
-    // Register global Wails SSH event listener once
-    if (window.runtime && typeof window.runtime.EventsOn === "function") {
-      window.runtime.EventsOn("ssh:event", (payload) => {
-        if (!payload) return;
-        const sess = state.sessions.find((s) => s.desktopSessionId === payload.session_id);
-        if (!sess) return;
-        if (payload.event === "msg" && payload.msg) {
-          handleSSHMessage(sess, payload.msg);
-        } else if (payload.event === "closed") {
-          sess.desktopSessionId = null;
-          handleSessionDisconnected(sess);
-        }
-      });
-    }
-  } else {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    state.isDesktop = false;
-    state.wsBase = `${proto}//${location.host}`;
-  }
-}
-
 async function rawRequest(path, opts = {}) {
-  const method = (opts.method || "GET").toUpperCase();
-  const body = opts.body ? String(opts.body) : "";
-
-  if (state.isDesktop) {
-    const resp = await window.go.main.DesktopApp.APIRequest(method, path, body, state.sessionToken || "");
-    return { status: resp.status, text: resp.body || "" };
-  }
-
   const headers = Object.assign(
     { "Content-Type": "application/json", "X-Requested-With": "SSHGuard" },
     opts.headers || {}
@@ -73,7 +25,6 @@ async function rawRequest(path, opts = {}) {
 async function api(path, opts = {}) {
   const { status, text } = await rawRequest(path, opts);
   if (status === 401) {
-    state.sessionToken = "";
     showVaultScreen();
     throw new Error("会话已过期或凭证库已锁定");
   }
@@ -89,7 +40,6 @@ async function api(path, opts = {}) {
 
 async function initApp() {
   try {
-    await detectRuntime();
     const status = await api("/api/vault/status");
     state.initialized = status.initialized;
     if (status.authenticated) {
@@ -146,13 +96,10 @@ document.getElementById("vault-form").addEventListener("submit", async (e) => {
   }
   try {
     const endpoint = state.initialized ? "/api/vault/unlock" : "/api/vault/setup";
-    const resp = await api(endpoint, {
+    await api(endpoint, {
       method: "POST",
       body: JSON.stringify({ master_password: pw }),
     });
-    if (resp && resp.session_token) {
-      state.sessionToken = resp.session_token;
-    }
     state.initialized = true;
     showAppShell();
     await loadHosts();
@@ -166,33 +113,7 @@ document.getElementById("btn-lock").addEventListener("click", async () => {
   try {
     await api("/api/vault/lock", { method: "POST" });
   } finally {
-    state.sessionToken = "";
     showVaultScreen();
-  }
-});
-
-document.getElementById("btn-open-data").addEventListener("click", async () => {
-  if (state.isDesktop && window.go?.main?.DesktopApp?.OpenDataDir) {
-    try {
-      await window.go.main.DesktopApp.OpenDataDir();
-    } catch (err) {
-      alert("无法打开数据目录: " + err);
-    }
-  }
-});
-
-document.getElementById("btn-pick-key").addEventListener("click", async () => {
-  if (state.isDesktop && window.go?.main?.DesktopApp?.PickPrivateKeyFile) {
-    try {
-      const keyContent = await window.go.main.DesktopApp.PickPrivateKeyFile();
-      if (keyContent) {
-        document.getElementById("f-private-key").value = keyContent;
-      }
-    } catch (err) {
-      const errEl = document.getElementById("host-form-error");
-      errEl.textContent = "读取私钥文件失败: " + err;
-      errEl.classList.remove("hidden");
-    }
   }
 });
 
@@ -324,7 +245,7 @@ window.deleteHost = async function (id) {
   await loadHosts();
 };
 
-// --- SSH Session Tabs (IPC in Desktop / WebSocket in Web) ---
+// --- SSH Session Tabs (WebSocket) ---
 
 function getSession(id) {
   return state.sessions.find((s) => s.id === id) || null;
@@ -439,13 +360,6 @@ function closeSession(id) {
     try { sess.ws.close(); } catch (_) {}
     sess.ws = null;
   }
-  if (sess.desktopSessionId) {
-    const oldId = sess.desktopSessionId;
-    sess.desktopSessionId = null;
-    if (window.go?.main?.DesktopApp?.CloseSSHSession) {
-      window.go.main.DesktopApp.CloseSSHSession(oldId).catch(() => {});
-    }
-  }
   if (sess.term) {
     try { sess.term.dispose(); } catch (_) {}
     sess.term = null;
@@ -488,13 +402,8 @@ function handleSessionDisconnected(sess) {
 
 function sendSessionPayload(sess, obj) {
   if (!sess) return;
-  const raw = JSON.stringify(obj);
-  if (state.isDesktop) {
-    if (sess.desktopSessionId && window.go?.main?.DesktopApp?.SendSSHMessage) {
-      window.go.main.DesktopApp.SendSSHMessage(sess.desktopSessionId, raw).catch(() => {});
-    }
-  } else if (sess.ws && sess.ws.readyState === WebSocket.OPEN) {
-    sess.ws.send(raw);
+  if (sess.ws && sess.ws.readyState === WebSocket.OPEN) {
+    sess.ws.send(JSON.stringify(obj));
   }
 }
 
@@ -807,7 +716,6 @@ window.connectHost = async function (hostId) {
     status: "connecting",
     statusText: `正在连接 ${host.name} (${host.username}@${host.address}:${host.port})`,
     ws: null,
-    desktopSessionId: null,
     closing: false,
     term: null,
     fitAddon: null,
@@ -844,32 +752,6 @@ window.connectHost = async function (hostId) {
     fitSession(cur);
     if (cur.term) cur.term.focus();
   });
-
-  if (state.isDesktop) {
-    const sessID = `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    sess.desktopSessionId = sessID;
-    try {
-      await window.go.main.DesktopApp.OpenSSHSession(
-        sessID,
-        hostId,
-        sess.term.cols,
-        sess.term.rows,
-        state.sessionToken
-      );
-      if (sess.closing) {
-        if (window.go?.main?.DesktopApp?.CloseSSHSession) {
-          window.go.main.DesktopApp.CloseSSHSession(sessID).catch(() => {});
-        }
-        return;
-      }
-    } catch (err) {
-      if (sess.closing) return;
-      sess.desktopSessionId = null;
-      if (sess.term) sess.term.writeln(`\r\n\x1b[1;31m[错误]\x1b[0m ${err}`);
-      setSessionStatus(sess, "error", `连接失败 · ${host.name}`);
-    }
-    return;
-  }
 
   const params = new URLSearchParams({
     cols: String(sess.term.cols),

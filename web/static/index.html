@@ -46,7 +46,6 @@
       <div class="sidebar-footer">
         <button id="btn-recordings" class="btn btn-ghost btn-sm">录像</button>
         <button id="btn-audit" class="btn btn-ghost btn-sm">审计</button>
-        <button id="btn-open-data" class="btn btn-ghost btn-sm hidden" title="在 Finder / 资源管理器中打开数据目录">数据目录</button>
         <button id="btn-lock" class="btn btn-danger btn-sm">锁定</button>
       </div>
     </aside>
@@ -58,7 +57,6 @@
           <span id="active-host-label">未连接 · 请从左侧选择主机</span>
         </div>
         <div class="topbar-actions">
-          <span id="platform-label" class="muted small hidden"></span>
           <button id="btn-disconnect" class="btn btn-ghost btn-sm hidden">断开连接</button>
         </div>
       </header>
@@ -122,7 +120,6 @@
         <div id="key-field">
           <div class="label-row">
             <label>SSH 私钥内容 (PEM / OpenSSH 格式) <span id="secret-hint-key" class="muted"></span></label>
-            <button type="button" id="btn-pick-key" class="btn btn-ghost btn-xs hidden">从本机导入私钥文件...</button>
           </div>
           <textarea id="f-private-key" rows="5" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
           <label>私钥口令 Passphrase (可选)</label>

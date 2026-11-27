@@ -3,6 +3,8 @@ package crypto
 import (
 	"bytes"
 	"runtime"
+	"runtime/debug"
+	"sync"
 	"testing"
 )
 
@@ -93,5 +95,57 @@ func TestDeriveKEKReclaimsArgon2Memory(t *testing.T) {
 	)
 	if retained > 24*1024*1024 {
 		t.Fatalf("expected Argon2id 64 MiB buffer to be reclaimed to OS, retained=%.2f MiB", float64(retained)/(1024*1024))
+	}
+}
+
+func TestDeriveKEKRestoresTightMemoryLimitAndPreservesHigherLimit(t *testing.T) {
+	origLimit := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() {
+		debug.SetMemoryLimit(origLimit)
+	})
+
+	salt := bytes.Repeat([]byte{0x24}, saltSize)
+
+	// 1. Tight steady-state limit (28 MiB) must be temporarily raised and restored cleanly,
+	// even when multiple goroutines call DeriveKEK concurrently.
+	const tightLimit int64 = 28 << 20
+	debug.SetMemoryLimit(tightLimit)
+
+	var (
+		wg   sync.WaitGroup
+		keks [2][]byte
+	)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			keks[idx] = DeriveKEK("SuperStrongMasterPass!2026", salt)
+		}(i)
+	}
+	wg.Wait()
+	defer Zeroize(keks[0])
+	defer Zeroize(keks[1])
+
+	if !bytes.Equal(keks[0], keks[1]) || len(keks[0]) != int(argonKeyLen) {
+		t.Fatalf("unexpected concurrent KEK outputs: len0=%d len1=%d", len(keks[0]), len(keks[1]))
+	}
+	if got := debug.SetMemoryLimit(-1); got != tightLimit {
+		t.Fatalf("expected GOMEMLIMIT restored to %d, got %d", tightLimit, got)
+	}
+
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	retained := ms.HeapInuse + (ms.HeapIdle - ms.HeapReleased)
+	if retained > 24*1024*1024 {
+		t.Fatalf("expected retained heap <= 24 MiB after tight-limit DeriveKEK, got %.2f MiB", float64(retained)/(1024*1024))
+	}
+
+	// 2. Higher finite limit (>= 96 MiB) must not be lowered or altered.
+	const higherLimit int64 = 128 << 20
+	debug.SetMemoryLimit(higherLimit)
+	kek := DeriveKEK("SuperStrongMasterPass!2026", salt)
+	defer Zeroize(kek)
+	if got := debug.SetMemoryLimit(-1); got != higherLimit {
+		t.Fatalf("expected higher GOMEMLIMIT %d preserved, got %d", higherLimit, got)
 	}
 }

@@ -1,0 +1,22 @@
+{
+  "name": "SSH-Guard",
+  "slug": "ssh-guard",
+  "identifier": "com.pandasir.sshguard",
+  "version": "0.4.0",
+  "copyright": "MIT License",
+  "publisher": "SSH-Guard",
+  "license": "MIT",
+  "out": "dist/mygo",
+  "macos": {
+    "minimumSystemVersion": "13.0",
+    "dmgTitle": "SSH-Guard"
+  },
+  "windows": {
+    "displayName": "SSH-Guard",
+    "installDirName": "SSH-Guard"
+  },
+  "linux": {
+    "webview": false,
+    "comment": "Zero-Trust Offline SSH Management Desktop App"
+  }
+}

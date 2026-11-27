@@ -16,10 +16,11 @@ import (
 
 const (
 	// Argon2id parameters (OWASP recommended baseline for interactive unlock)
-	argonTime    uint32 = 3
-	argonMemory  uint32 = 64 * 1024 // 64 MiB
-	argonThreads uint8  = 4
-	argonKeyLen  uint32 = 32 // AES-256
+	argonTime          uint32 = 3
+	argonMemory        uint32 = 64 * 1024 // 64 MiB
+	argonThreads       uint8  = 4
+	argonKeyLen        uint32 = 32       // AES-256
+	argonHeadroomBytes int64  = 96 << 20 // temporary GOMEMLIMIT floor during KEK derivation
 
 	saltSize  = 32
 	dekSize   = 32
@@ -27,6 +28,8 @@ const (
 )
 
 var (
+	argonLimitMu sync.Mutex
+
 	ErrVaultLocked      = errors.New("vault is locked")
 	ErrInvalidMasterKey = errors.New("invalid master password")
 	ErrCorruptedCipher  = errors.New("corrupted or tampered ciphertext")
@@ -63,12 +66,26 @@ func Zeroize(b []byte) {
 }
 
 // DeriveKEK derives a 32-byte Key Encryption Key from masterPassword and salt using Argon2id.
-// Immediately reclaims the transient 64 MiB Argon2id work buffer back to the OS so desktop
-// processes do not retain a 64 MiB RSS spike waiting on Go's periodic GC/scavenger.
+// When a tighter steady-state GOMEMLIMIT (< 96 MiB) is active, it temporarily raises the limit
+// to 96 MiB for the duration of Argon2id to avoid GC thrashing, restores the previous limit on
+// exit, and immediately reclaims the transient 64 MiB work buffer back to the OS.
 func DeriveKEK(masterPassword string, salt []byte) []byte {
-	kek := argon2.IDKey([]byte(masterPassword), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-	debug.FreeOSMemory()
-	return kek
+	argonLimitMu.Lock()
+	defer argonLimitMu.Unlock()
+
+	prevLimit := debug.SetMemoryLimit(-1)
+	raised := prevLimit > 0 && prevLimit < argonHeadroomBytes
+	if raised {
+		debug.SetMemoryLimit(argonHeadroomBytes)
+	}
+	defer func() {
+		if raised {
+			debug.SetMemoryLimit(prevLimit)
+		}
+		debug.FreeOSMemory()
+	}()
+
+	return argon2.IDKey([]byte(masterPassword), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 }
 
 // Setup initializes a brand-new vault from a master password, keeps KEK in memory,

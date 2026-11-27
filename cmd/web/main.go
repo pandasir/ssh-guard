@@ -49,10 +49,8 @@ func main() {
 	defer vault.Lock() // Wipe KEK from memory on shutdown
 
 	useTLS := *tlsCert != "" && *tlsKey != ""
-	sessionMgr := auth.NewManager(useTLS || *secureCookie, false)
-	handler := api.NewServer(st, vault, sessionMgr, recordingsDir, api.ServerOptions{
-		DesktopMode: false,
-	})
+	sessionMgr := auth.NewManager(useTLS || *secureCookie)
+	handler := api.NewServer(st, vault, sessionMgr, recordingsDir)
 
 	srv := &http.Server{
 		Addr:              *addr,

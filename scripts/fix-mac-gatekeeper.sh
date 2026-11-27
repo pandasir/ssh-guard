@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_PATH="${1:-build/bin/SSH-Guard.app}"
+APP_PATH="${1:-dist/mygo/darwin-arm64/SSH-Guard.app}"
 
 if [ ! -d "$APP_PATH" ]; then
   echo "未找到应用包: $APP_PATH"
@@ -14,6 +14,12 @@ xattr -cr "$APP_PATH"
 
 SIGN_ID="${CODESIGN_IDENTITY:--}"
 echo "=== 正在进行本地签名 (Identity: ${SIGN_ID}) ==="
+if [ -d "$APP_PATH/Contents/Resources" ]; then
+  while IFS= read -r -d '' dylib; do
+    echo "  - 签名动态库: ${dylib}"
+    codesign --force --sign "$SIGN_ID" "$dylib"
+  done < <(find "$APP_PATH/Contents/Resources" -maxdepth 2 -name "*.dylib" -print0)
+fi
 codesign --force --deep --sign "$SIGN_ID" "$APP_PATH"
 
 echo "=== 校验签名完整性 ==="

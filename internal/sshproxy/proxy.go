@@ -1,14 +1,11 @@
 package sshproxy
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -33,8 +30,7 @@ type WSMessage struct {
 	RuleName        string `json:"rule_name,omitempty"`
 }
 
-// Transport abstracts the bidirectional terminal channel so Web uses WebSocket
-// and Desktop uses zero-port in-process Wails IPC.
+// Transport abstracts the bidirectional terminal channel for WebSocket and legacy IPC adapters.
 type Transport interface {
 	Send(msg WSMessage) error
 	Recv() (*WSMessage, error)
@@ -84,6 +80,13 @@ type BridgeConfig struct {
 	RecordingsDir string
 	InitialCols   int
 	InitialRows   int
+
+	// Optional callbacks consumed by native or transport adapters.
+	OnStatus     func(msg string)
+	OnGuardBlock func(ruleName, cmd string)
+
+	// Optional custom dialer (used by tests to run full SSH over net.Pipe without TCP sockets).
+	DialConn func(ctx context.Context, addr string) (net.Conn, error)
 }
 
 // ServeSession bridges a WebSocket connection to an SSH PTY session (Web Edition).
@@ -91,8 +94,7 @@ func ServeSession(ws *websocket.Conn, cfg BridgeConfig) {
 	ServeTransport(NewWSTransport(ws), cfg)
 }
 
-// ServeTransport bridges any Transport (WebSocket or Wails IPC) to an SSH PTY session.
-// Credentials are decrypted just-in-time for the SSH handshake and immediately zeroized.
+// ServeTransport bridges any Transport to the shared DialSession/LiveSession core.
 func ServeTransport(tr Transport, cfg BridgeConfig) {
 	defer tr.Close()
 
@@ -100,37 +102,14 @@ func ServeTransport(tr Transport, cfg BridgeConfig) {
 		_ = tr.Send(msg)
 	}
 
-	cols := cfg.InitialCols
-	rows := cfg.InitialRows
-	if cols <= 0 {
-		cols = 120
-	}
-	if rows <= 0 {
-		rows = 32
+	cfg.OnStatus = func(status string) {
+		sendMsg(WSMessage{Type: "status", Data: status})
 	}
 
-	// 1. Decrypt credentials in memory and build ssh.AuthMethod
-	authMethods, cleanupCreds, err := buildAuthMethods(cfg.Vault, cfg.Host)
-	if err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "凭据解密失败: " + err.Error()})
-		return
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	sshConfig := &ssh.ClientConfig{
-		User:            cfg.Host.Username,
-		Auth:            authMethods,
-		HostKeyCallback: NewStrictHostKeyCallback(cfg.Store, cfg.Host.ID),
-		Timeout:         12 * time.Second,
-	}
-
-	targetAddr := net.JoinHostPort(cfg.Host.Address, fmt.Sprintf("%d", cfg.Host.Port))
-	sendMsg(WSMessage{Type: "status", Data: fmt.Sprintf("正在连接 %s@%s ...", cfg.Host.Username, targetAddr)})
-
-	// 2. Dial SSH server (handshake runs here)
-	client, err := ssh.Dial("tcp", targetAddr, sshConfig)
-	// Immediately wipe decrypted password/key material from memory right after dial completes!
-	cleanupCreds()
-
+	live, err := DialSession(ctx, cfg)
 	if err != nil {
 		var untrustedErr *HostKeyUntrustedError
 		if errors.As(err, &untrustedErr) {
@@ -145,10 +124,6 @@ func ServeTransport(tr Transport, cfg BridgeConfig) {
 		}
 		var mismatchErr *HostKeyMismatchError
 		if errors.As(err, &mismatchErr) {
-			cfg.Store.AddAuditLog(
-				cfg.Host.ID, cfg.Host.Name, "MITM_ALERT", "CRITICAL", cfg.ClientIP,
-				fmt.Sprintf("主机指纹变更！预期: %s，实际: %s", mismatchErr.ExpectedFP, mismatchErr.ActualFP),
-			)
 			sendMsg(WSMessage{
 				Type:            "host_key_mismatch",
 				ExpectedFP:      mismatchErr.ExpectedFP,
@@ -159,151 +134,67 @@ func ServeTransport(tr Transport, cfg BridgeConfig) {
 			})
 			return
 		}
-		sendMsg(WSMessage{Type: "error", Data: "SSH 握手失败: " + err.Error()})
+		sendMsg(WSMessage{Type: "error", Data: err.Error()})
 		return
 	}
-	defer client.Close()
+	defer live.Close()
 
-	// 3. Create SSH session & request PTY
-	session, err := client.NewSession()
-	if err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "创建 SSH 会话失败: " + err.Error()})
-		return
-	}
-	defer session.Close()
-
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,
-		ssh.TTY_OP_ISPEED: 14400,
-		ssh.TTY_OP_OSPEED: 14400,
-	}
-	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "申请 PTY 失败: " + err.Error()})
-		return
-	}
-
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "绑定 Stdin 失败: " + err.Error()})
-		return
-	}
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "绑定 Stdout 失败: " + err.Error()})
-		return
-	}
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "绑定 Stderr 失败: " + err.Error()})
-		return
-	}
-
-	if err := session.Shell(); err != nil {
-		sendMsg(WSMessage{Type: "error", Data: "启动远程 Shell 失败: " + err.Error()})
-		return
-	}
-
-	// 4. Start asciinema (.cast) recording & audit log
-	sessionID := randomSessionID()
-	recorder, recErr := NewCastRecorder(cfg.RecordingsDir, sessionID, fmt.Sprintf("%s (%s)", cfg.Host.Name, targetAddr), cols, rows)
-	startedAt := time.Now()
-	if recErr == nil {
-		_ = cfg.Store.CreateRecording(&store.Recording{
-			ID:        sessionID,
-			HostID:    cfg.Host.ID,
-			HostName:  cfg.Host.Name,
-			ClientIP:  cfg.ClientIP,
-			FilePath:  filepath.Clean(recorder.FilePath()),
-			StartedAt: startedAt,
-		})
-	}
-	cfg.Store.AddAuditLog(cfg.Host.ID, cfg.Host.Name, "CONNECT", "INFO", cfg.ClientIP, fmt.Sprintf("建立 SSH 会话 (session=%s)", sessionID))
 	sendMsg(WSMessage{Type: "status", Data: "CONNECTED"})
 
-	defer func() {
-		if recorder != nil {
-			size, _ := recorder.Close()
-			_ = cfg.Store.FinishRecording(sessionID, time.Now(), size)
-		}
-		cfg.Store.AddAuditLog(cfg.Host.ID, cfg.Host.Name, "DISCONNECT", "INFO", cfg.ClientIP, fmt.Sprintf("关闭 SSH 会话 (session=%s)", sessionID))
-	}()
-
-	// 5. Pump SSH stdout/stderr -> Transport + Recorder
 	done := make(chan struct{})
 	var closeOnce sync.Once
 	signalDone := func() {
-		closeOnce.Do(func() { close(done) })
+		closeOnce.Do(func() {
+			close(done)
+			_ = live.Close()
+		})
 	}
 
-	pumpOutput := func(r io.Reader) {
+	// Pump merged LiveSession output -> Transport.
+	go func() {
+		defer signalDone()
 		buf := make([]byte, 4096)
 		for {
-			n, err := r.Read(buf)
+			n, rerr := live.Read(buf)
 			if n > 0 {
-				slice := buf[:n]
-				if recorder != nil {
-					recorder.RecordOutput(slice)
-				}
-				if sendErr := tr.Send(WSMessage{Type: "output", Data: string(slice)}); sendErr != nil {
-					signalDone()
+				if sendErr := tr.Send(WSMessage{Type: "output", Data: string(buf[:n])}); sendErr != nil {
 					return
 				}
 			}
-			if err != nil {
-				signalDone()
+			if rerr != nil {
 				return
 			}
 		}
-	}
+	}()
 
-	go pumpOutput(stdout)
-	go pumpOutput(stderr)
-
-	// 6. Pump Transport -> High-Risk Command Guard -> SSH stdin
-	guard := NewCommandGuard(cfg.Host.GuardEnabled)
+	// Pump Transport input/resize -> LiveSession.
 	go func() {
 		defer signalDone()
 		for {
-			msg, err := tr.Recv()
-			if err != nil || msg == nil {
+			msg, rerr := tr.Recv()
+			if rerr != nil || msg == nil {
 				return
 			}
 			switch msg.Type {
 			case "resize":
 				if msg.Cols > 0 && msg.Rows > 0 {
-					_ = session.WindowChange(msg.Rows, msg.Cols)
+					_ = live.Resize(msg.Cols, msg.Rows)
 				}
 			case "input":
 				if msg.Data == "" {
 					continue
 				}
-				inputBytes := []byte(msg.Data)
-				if blocked, ruleName, cmd := guard.Feed(inputBytes); blocked {
-					_, _ = stdin.Write([]byte{0x03})
-					cfg.Store.AddAuditLog(
-						cfg.Host.ID, cfg.Host.Name, "BLOCKED_CMD", "WARN", cfg.ClientIP,
-						fmt.Sprintf("已拦截高危命令 [%s]: %s", ruleName, cmd),
-					)
-					warnBanner := fmt.Sprintf("\r\n\x1b[1;31m[SSH-Guard 已拦截高危命令]\x1b[0m 规则: %s | 命令: %s\r\n", ruleName, cmd)
-					if recorder != nil {
-						recorder.RecordOutput([]byte(warnBanner))
-					}
-					sendMsg(WSMessage{Type: "guard_blocked", RuleName: ruleName, Data: warnBanner})
-					continue
-				}
-				if _, err := stdin.Write(inputBytes); err != nil {
+				if _, werr := live.Write([]byte(msg.Data)); werr != nil {
 					return
 				}
 			}
 		}
 	}()
 
-	go func() {
-		_ = session.Wait()
-		signalDone()
-	}()
-
-	<-done
+	select {
+	case <-done:
+	case <-live.Done():
+	}
 }
 
 func buildAuthMethods(vault *crypto.Vault, host *store.Host) ([]ssh.AuthMethod, func(), error) {
@@ -370,10 +261,4 @@ func buildAuthMethods(vault *crypto.Vault, host *store.Host) ([]ssh.AuthMethod, 
 		cleanup()
 		return nil, func() {}, fmt.Errorf("不支持的认证类型: %s", host.AuthType)
 	}
-}
-
-func randomSessionID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%s-%s", time.Now().Format("20060102-150405"), hex.EncodeToString(b))
 }

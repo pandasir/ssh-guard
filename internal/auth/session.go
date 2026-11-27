@@ -10,7 +10,6 @@ import (
 
 const (
 	CookieName  = "ssh_guard_session"
-	HeaderName  = "X-Session-Token"
 	idleTimeout = 30 * time.Minute
 	maxLifetime = 8 * time.Hour
 )
@@ -25,14 +24,12 @@ type Manager struct {
 	mu           sync.Mutex
 	sessions     map[string]*sessionEntry
 	secureCookie bool
-	allowHeader  bool // Enabled ONLY in local Desktop mode
 }
 
-func NewManager(secureCookie bool, allowHeader bool) *Manager {
+func NewManager(secureCookie bool) *Manager {
 	return &Manager{
 		sessions:     make(map[string]*sessionEntry),
 		secureCookie: secureCookie,
-		allowHeader:  allowHeader,
 	}
 }
 
@@ -65,7 +62,11 @@ func (m *Manager) Create(w http.ResponseWriter, clientIP string) (string, error)
 }
 
 func (m *Manager) Validate(r *http.Request) bool {
-	return m.ValidateToken(m.extractToken(r))
+	c, err := r.Cookie(CookieName)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	return m.ValidateToken(c.Value)
 }
 
 func (m *Manager) ValidateToken(token string) bool {
@@ -87,21 +88,6 @@ func (m *Manager) ValidateToken(token string) bool {
 	}
 	entry.lastActive = now
 	return true
-}
-
-func (m *Manager) extractToken(r *http.Request) string {
-	if c, err := r.Cookie(CookieName); err == nil && c.Value != "" {
-		return c.Value
-	}
-	if m.allowHeader {
-		if h := r.Header.Get(HeaderName); h != "" {
-			return h
-		}
-		if q := r.URL.Query().Get("st"); q != "" {
-			return q
-		}
-	}
-	return ""
 }
 
 func (m *Manager) RevokeAll(w http.ResponseWriter) {

@@ -6,8 +6,8 @@
 # Build outputs & installers
 /bin/
 /dist/
-/build/bin/
-/build/windows/installer/tmp/
+/.mygo/
+/internal/desktopui/nativeembed/*.dll
 *.dmg
 *.zip
 *.exe

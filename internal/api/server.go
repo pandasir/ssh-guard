@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,28 +21,21 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type ServerOptions struct {
-	DesktopMode   bool
-	DesktopSecret string
-}
-
 type Server struct {
 	store         *store.Store
 	vault         *crypto.Vault
 	sessions      *auth.Manager
 	recordingsDir string
-	opts          ServerOptions
 	mux           *http.ServeMux
 	upgrader      websocket.Upgrader
 }
 
-func NewServer(st *store.Store, v *crypto.Vault, sm *auth.Manager, recordingsDir string, opts ServerOptions) *Server {
+func NewServer(st *store.Store, v *crypto.Vault, sm *auth.Manager, recordingsDir string) *Server {
 	s := &Server{
 		store:         st,
 		vault:         v,
 		sessions:      sm,
 		recordingsDir: recordingsDir,
-		opts:          opts,
 		mux:           http.NewServeMux(),
 	}
 	s.upgrader = websocket.Upgrader{
@@ -51,9 +43,6 @@ func NewServer(st *store.Store, v *crypto.Vault, sm *auth.Manager, recordingsDir
 		WriteBufferSize: 4096,
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
-			if s.opts.DesktopMode {
-				return origin == "" || isAllowedDesktopOrigin(origin)
-			}
 			if origin == "" {
 				return true
 			}
@@ -64,72 +53,12 @@ func NewServer(st *store.Store, v *crypto.Vault, sm *auth.Manager, recordingsDir
 	return s
 }
 
-func isAllowedDesktopOrigin(origin string) bool {
-	if origin == "null" ||
-		strings.HasPrefix(origin, "wails://") ||
-		origin == "wails://wails.localhost" ||
-		origin == "http://wails.localhost" ||
-		origin == "https://wails.localhost" {
-		return true
-	}
-	// Support Wails dev server origin (http://wails.localhost:<port> or http://localhost:<port>)
-	if strings.HasPrefix(origin, "wails://wails.localhost:") ||
-		strings.HasPrefix(origin, "http://wails.localhost:") ||
-		strings.HasPrefix(origin, "http://localhost:") ||
-		strings.HasPrefix(origin, "http://127.0.0.1:") {
-		return true
-	}
-	return false
-}
-
-func (s *Server) verifyDesktopSecret(r *http.Request) bool {
-	if !s.opts.DesktopMode {
-		return true
-	}
-	got := r.Header.Get("X-Desktop-Secret")
-	if got == "" {
-		got = r.URL.Query().Get("ds")
-	}
-	if len(got) != len(s.opts.DesktopSecret) || len(got) == 0 {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.opts.DesktopSecret)) == 1
-}
-
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Baseline security headers
+	// Baseline security headers & strict offline CSP
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if !s.opts.DesktopMode {
-		// 100% offline self-hosted assets: block any unexpected third-party script/style execution
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:")
-	}
-
-	if s.opts.DesktopMode {
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			if !isAllowedDesktopOrigin(origin) {
-				http.Error(w, "forbidden desktop origin", http.StatusForbidden)
-				return
-			}
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Requested-With, X-Desktop-Secret, X-Session-Token")
-			w.Header().Set("Vary", "Origin")
-		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		// Require per-launch random IPC secret on every API & WebSocket request in Desktop mode
-		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
-			if !s.verifyDesktopSecret(r) {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid desktop IPC secret"})
-				return
-			}
-		}
-	}
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:")
 
 	s.mux.ServeHTTP(w, r)
 }
@@ -151,15 +80,13 @@ func (s *Server) registerRoutes() {
 	// WebSocket SSH Terminal
 	s.mux.HandleFunc("/ws/ssh/", s.requireAuth(s.handleWSSSH))
 
-	// Embedded Web UI (used in Web Edition; Desktop serves assets via Wails AssetServer)
-	if !s.opts.DesktopMode {
-		staticFS, err := fs.Sub(web.StaticFiles, "static")
-		if err != nil {
-			panic(err)
-		}
-		fileServer := http.FileServer(http.FS(staticFS))
-		s.mux.Handle("/", fileServer)
+	// Embedded Web UI
+	staticFS, err := fs.Sub(web.StaticFiles, "static")
+	if err != nil {
+		panic(err)
 	}
+	fileServer := http.FileServer(http.FS(staticFS))
+	s.mux.Handle("/", fileServer)
 }
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -190,15 +117,11 @@ func (s *Server) handleVaultStatus(w http.ResponseWriter, r *http.Request) {
 	unlocked := s.vault.IsUnlocked()
 	authenticated := unlocked && s.sessions.Validate(r)
 
-	mode := "web"
-	if s.opts.DesktopMode {
-		mode = "desktop"
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"initialized":   initialized,
 		"unlocked":      unlocked,
 		"authenticated": authenticated,
-		"mode":          mode,
+		"mode":          "web",
 	})
 }
 
@@ -232,17 +155,12 @@ func (s *Server) handleVaultSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
-	token, err := s.sessions.Create(w, ip)
-	if err != nil {
+	if _, err := s.sessions.Create(w, ip); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create session failed"})
 		return
 	}
 	s.store.AddAuditLog(0, "Vault", "VAULT_SETUP", "INFO", ip, "初始化主密钥并解锁凭证库")
-	resp := map[string]string{"status": "initialized"}
-	if s.opts.DesktopMode {
-		resp["session_token"] = token
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "initialized"})
 }
 
 func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
@@ -274,17 +192,12 @@ func (s *Server) handleVaultUnlock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "主密码错误"})
 		return
 	}
-	token, err := s.sessions.Create(w, ip)
-	if err != nil {
+	if _, err := s.sessions.Create(w, ip); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create session failed"})
 		return
 	}
 	s.store.AddAuditLog(0, "Vault", "VAULT_UNLOCK", "INFO", ip, "主密钥已解锁至内存")
-	resp := map[string]string{"status": "unlocked"}
-	if s.opts.DesktopMode {
-		resp["session_token"] = token
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unlocked"})
 }
 
 func (s *Server) handleVaultLock(w http.ResponseWriter, r *http.Request) {

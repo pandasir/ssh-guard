@@ -85,7 +85,7 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=cache_size(-512)&_pragma=temp_store(FILE)", dbPath)
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=cache_size(-256)&_pragma=mmap_size(0)&_pragma=temp_store(FILE)", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -112,6 +112,15 @@ func Open(dbPath string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// ShrinkMemory asks SQLite to release unused page cache memory immediately.
+func (s *Store) ShrinkMemory() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	_, err := s.db.Exec("PRAGMA shrink_memory")
+	return err
 }
 
 func (s *Store) migrate() error {

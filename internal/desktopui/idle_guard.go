@@ -11,8 +11,8 @@ const (
 	defaultIdleTick    = 5 * time.Second
 )
 
-// IdleGuard enforces desktop vault auto-lock on inactivity or max session lifetime,
-// matching the 30-minute idle / 8-hour max-lifetime security policy of internal/auth.
+// IdleGuard enforces desktop vault auto-lock on inactivity or max session lifetime
+// (default 30-minute idle timeout and 8-hour maximum unlocked lifetime).
 type IdleGuard struct {
 	idleTimeout time.Duration
 	maxLifetime time.Duration

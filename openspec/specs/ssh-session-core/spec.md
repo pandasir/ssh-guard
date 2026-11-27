@@ -71,10 +71,3 @@ The core SHALL support streaming playback parsing of asciinema v2 (`.cast`) reco
 #### Scenario: Streaming reader yields header and ordered output events
 - **WHEN** a caller opens a valid `.cast` recording file via the streaming reader
 - **THEN** the reader parses and returns the header (including recorded `width` and `height`) first and subsequently yields timestamped `"o"` output events incrementally until EOF
-
-### Requirement: Offline Web edition compatibility
-The Web edition SHALL consume the shared SSH session core while preserving its existing HTTP/WebSocket protocol, host management, TOFU/MITM modal workflow, command guard behavior, and terminal UI without functional regression.
-
-#### Scenario: Web terminal session behaves identically over WebSocket
-- **WHEN** a user connects to a host through the offline Web edition browser interface
-- **THEN** the Web server bridges WebSocket messages to the shared SSH session core, preserving status messages, TOFU/MITM prompts, high-risk block banners, PTY resizing, and `.cast` recording playback

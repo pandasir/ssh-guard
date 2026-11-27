@@ -1,4 +1,4 @@
-name: Build & Release (macOS DMG + Windows EXE + Web)
+name: Build & Release (macOS DMG + Windows EXE)
 
 on:
   workflow_dispatch:
@@ -10,35 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  build-web:
-    name: Build Offline Web Binaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.27"
-      - name: Bundle Offline xterm.js
-        run: chmod +x scripts/fetch-vendor.sh && ./scripts/fetch-vendor.sh
-      - name: Run Unit Tests & Verify Web Dependency Isolation
-        run: |
-          go test -v -race ./internal/... ./cmd/web/...
-          if go list -deps ./cmd/web | grep -q "github.com/egoist/mygo"; then
-            echo "ERROR: cmd/web unexpectedly imports github.com/egoist/mygo" >&2
-            exit 1
-          fi
-      - name: Cross-compile Web Edition
-        run: |
-          mkdir -p dist-web
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist-web/ssh-guard-web-darwin-arm64 ./cmd/web
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist-web/ssh-guard-web-windows-amd64.exe ./cmd/web
-          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist-web/ssh-guard-web-windows-arm64.exe ./cmd/web
-          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist-web/ssh-guard-web-linux-amd64 ./cmd/web
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ssh-guard-web-binaries
-          path: dist-web/*
-
   build-desktop-mac:
     name: Build macOS Native Desktop (.dmg)
     runs-on: macos-latest
@@ -143,7 +114,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build-web, build-desktop-mac, build-desktop-windows]
+    needs: [build-desktop-mac, build-desktop-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

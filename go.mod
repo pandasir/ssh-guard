@@ -5,7 +5,6 @@ go 1.27.3
 require (
 	github.com/ebitengine/purego v0.11.1
 	github.com/egoist/mygo v0.10.0
-	github.com/gorilla/websocket v1.5.3
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.34.4
 )

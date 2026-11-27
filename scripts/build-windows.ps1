@@ -5,30 +5,13 @@ if (-not $env:GOPROXY) {
     $env:GOPROXY = "https://proxy.golang.org,https://goproxy.cn,direct"
 }
 
-Write-Host "=== [1/5] 准备离线 Web 版内置 xterm.js 资源 ===" -ForegroundColor Cyan
-& "$PSScriptRoot\fetch-vendor.ps1"
-
-Write-Host "=== [2/5] 运行单元测试与 MyGo UI 静态检查 ===" -ForegroundColor Cyan
-go test -v ./internal/...
+Write-Host "=== [1/3] 运行单元测试与 MyGo UI 静态检查 ===" -ForegroundColor Cyan
+go test -v ./...
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 go tool mygo vet .
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "=== [3/5] 编译纯离线网页版单二进制 (Windows amd64 + macOS arm64) ===" -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path bin | Out-Null
-$env:CGO_ENABLED = "0"
-$env:GOOS = "windows"
-$env:GOARCH = "amd64"
-go build -trimpath -ldflags="-s -w" -o bin/ssh-guard-web-windows-amd64.exe ./cmd/web
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$env:GOOS = "darwin"
-$env:GOARCH = "arm64"
-go build -trimpath -ldflags="-s -w" -o bin/ssh-guard-web-darwin-arm64 ./cmd/web
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Remove-Item Env:CGO_ENABLED, Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
-
-Write-Host "=== [4/5] 编译 Windows 原生桌面版与 NSIS 单文件安装包 (零 WebView2) ===" -ForegroundColor Cyan
+Write-Host "=== [2/3] 编译 Windows 原生桌面版与 NSIS 单文件安装包 (零 WebView2) ===" -ForegroundColor Cyan
 $prevGoFlags = $env:GOFLAGS
 try {
     $env:GOFLAGS = "-tags=mygo_nowebview"
@@ -40,7 +23,7 @@ try {
         throw "未找到 MyGo 构建产出的 $dllSrc"
     }
 
-    Write-Host "=== [5/5] 编译 100% 离线单文件绿色版 (portable.exe) ===" -ForegroundColor Cyan
+    Write-Host "=== [3/3] 编译 100% 离线单文件绿色版 (portable.exe) ===" -ForegroundColor Cyan
     $embedDir = "internal\desktopui\nativeembed"
     $embedDll = Join-Path $embedDir "ghostty-vt.dll"
     New-Item -ItemType Directory -Force -Path $embedDir | Out-Null
@@ -71,5 +54,3 @@ if ($setupExe) {
     Write-Host "  - Windows NSIS 安装包 : $($setupExe.FullName)"
 }
 Write-Host "  - Windows 离线绿色版  : dist\mygo\windows-amd64\SSH-Guard-Windows-amd64-portable.exe"
-Write-Host "  - Windows 网页版      : bin\ssh-guard-web-windows-amd64.exe"
-Write-Host "  - macOS ARM64 网页版  : bin\ssh-guard-web-darwin-arm64"

@@ -6,16 +6,16 @@ Defines the zero-CGO Go 1.27+ build, signing, and multi-platform release packagi
 
 ## Requirements
 
-### Requirement: Unified Go 1.27+ zero-CGO build pipeline
-The repository SHALL build both the native desktop edition and all offline Web edition binaries using a single root Go module targeting Go 1.27+ without requiring a C compiler toolchain (`CGO_ENABLED=0`).
+### Requirement: Desktop-only Go 1.27+ zero-CGO build pipeline
+The repository SHALL build the native desktop edition using a single root Go module targeting Go 1.27+ without requiring a C compiler toolchain (`CGO_ENABLED=0`) or any Web frontend or WebSocket server dependencies.
 
-#### Scenario: Web edition remains pure Go and decoupled from desktop UI dependencies
-- **WHEN** building the offline Web edition for `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `linux/amd64` with `CGO_ENABLED=0`
-- **THEN** all four Web binaries compile cleanly without importing desktop UI packages or native terminal dynamic libraries
+#### Scenario: Desktop build pins explicit framework version without Wails or Web toolchains
+- **WHEN** running desktop build commands locally or in CI
+- **THEN** builds use the pinned MyGo version via the Go toolchain (`go tool mygo build`) with zero dependency on the Wails CLI, `wails.json`, Web frontend toolchains, or a C compiler
 
-#### Scenario: Desktop build pins explicit framework version and removes Wails toolchain
-- **WHEN** running desktop build commands locally or in CI after migration cutover
-- **THEN** builds use the pinned MyGo version via the Go toolchain (`go tool mygo build`) with zero dependency on the Wails CLI or `wails.json`
+#### Scenario: Root Go module excludes Web-only packages and WebSocket dependencies
+- **WHEN** resolving module dependencies and running tests across `./...`
+- **THEN** the module contains no Web edition entrypoint (`cmd/web`), no embedded Web static assets (`web/`), and no WebSocket server dependency (`github.com/gorilla/websocket`)
 
 ### Requirement: macOS 13+ Apple Silicon desktop app and DMG packaging with native dylib signing
 The macOS desktop build SHALL target macOS 13.0 or later, bundle and sign the required native terminal dynamic library (`libghostty-vt.dylib`) inside `SSH-Guard.app`, and produce a distributable `.dmg` installer image.
@@ -47,8 +47,8 @@ The Windows release pipeline SHALL also produce a standalone, zero-install singl
 - **THEN** the portable executable respects the user-supplied path and does not overwrite it
 
 ### Requirement: Release workflow publishes complete checksummed artifacts
-The GitHub Actions release workflow SHALL run unit tests and publish macOS DMG, Windows NSIS installer, Windows single-file portable executable, four-platform offline Web binaries, and `SHA256SUMS.txt` on version tag pushes.
+The GitHub Actions release workflow SHALL run unit tests and publish macOS DMG, Windows NSIS installer, Windows single-file portable executable, and `SHA256SUMS.txt` on version tag pushes.
 
 #### Scenario: Tag release produces verified artifact set
 - **WHEN** a `v*` git tag is pushed or the release workflow is manually dispatched
-- **THEN** all build jobs execute on Go 1.27, generate the full matrix of desktop and Web artifacts, and compute `SHA256SUMS.txt` covering every published file
+- **THEN** all desktop build jobs execute on Go 1.27, generate `SSH-Guard-macOS-arm64.dmg`, `SSH-Guard-Windows-amd64-installer.exe`, and `SSH-Guard-Windows-amd64-portable.exe` without building Web binaries, and compute `SHA256SUMS.txt` covering every published file

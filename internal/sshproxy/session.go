@@ -90,9 +90,27 @@ func (s *memStream) Close() error {
 	return nil
 }
 
-// LiveSession represents an established, transport-agnostic SSH PTY session.
-// It implements io.ReadWriteCloser and Resize(cols, rows int) error so both
-// the native terminal plugin and WebSocket adapter can consume it directly.
+// BridgeConfig configures an in-process SSH PTY session opened by DialSession.
+type BridgeConfig struct {
+	Store         *store.Store
+	Vault         *crypto.Vault
+	Host          *store.Host
+	ClientIP      string
+	RecordingsDir string
+	InitialCols   int
+	InitialRows   int
+
+	// Optional callbacks consumed by native UI adapters.
+	OnStatus     func(msg string)
+	OnGuardBlock func(ruleName, cmd string)
+
+	// Optional custom dialer (used by tests to run full SSH over net.Pipe without TCP sockets).
+	DialConn func(ctx context.Context, addr string) (net.Conn, error)
+}
+
+// LiveSession represents an established, in-process SSH PTY session.
+// It implements io.ReadWriteCloser and Resize(cols, rows int) error so the
+// native terminal plugin can consume it directly.
 type LiveSession struct {
 	sessionID string
 	host      *store.Host
@@ -434,4 +452,70 @@ func randomSessionID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%s-%s", time.Now().Format("20060102-150405"), hex.EncodeToString(b))
+}
+
+func buildAuthMethods(vault *crypto.Vault, host *store.Host) ([]ssh.AuthMethod, func(), error) {
+	var sensitiveBuffers [][]byte
+	cleanup := func() {
+		for _, b := range sensitiveBuffers {
+			crypto.Zeroize(b)
+		}
+	}
+
+	secretBytes, err := vault.DecryptSecret(&crypto.Envelope{
+		EncDEK:    host.EncSecretDEK,
+		EncSecret: host.EncSecretData,
+	})
+	if err != nil {
+		return nil, cleanup, err
+	}
+	if len(secretBytes) == 0 {
+		return nil, cleanup, errors.New("主机未配置认证凭据")
+	}
+	sensitiveBuffers = append(sensitiveBuffers, secretBytes)
+
+	switch host.AuthType {
+	case store.AuthPassword:
+		passCopy := string(secretBytes)
+		return []ssh.AuthMethod{
+			ssh.Password(passCopy),
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range questions {
+					answers[i] = passCopy
+				}
+				return answers, nil
+			}),
+		}, cleanup, nil
+
+	case store.AuthPrivateKey:
+		var signer ssh.Signer
+		if host.EncPassData != "" {
+			passBytes, err := vault.DecryptSecret(&crypto.Envelope{
+				EncDEK:    host.EncPassDEK,
+				EncSecret: host.EncPassData,
+			})
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("解密私钥口令失败: %w", err)
+			}
+			sensitiveBuffers = append(sensitiveBuffers, passBytes)
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(secretBytes, passBytes)
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("解析加密私钥失败（请检查口令是否正确）: %w", err)
+			}
+		} else {
+			signer, err = ssh.ParsePrivateKey(secretBytes)
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("解析私钥失败（若私钥带口令请填写口令）: %w", err)
+			}
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, cleanup, nil
+
+	default:
+		cleanup()
+		return nil, func() {}, fmt.Errorf("不支持的认证类型: %s", host.AuthType)
+	}
 }

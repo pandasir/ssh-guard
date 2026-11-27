@@ -310,10 +310,16 @@ func (a *App) Shutdown() {
 		if a.idle != nil {
 			a.idle.Stop()
 		}
+		if a.win == nil {
+			a.uiMu.Lock()
+		}
 		a.closeAllTabs()
 		a.stopReplay()
 		a.clearUnlockInputs()
 		a.hostModal.clearSecrets()
+		if a.win == nil {
+			a.uiMu.Unlock()
+		}
 		if a.vault != nil {
 			a.vault.Lock()
 		}

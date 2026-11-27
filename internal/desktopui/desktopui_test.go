@@ -760,8 +760,10 @@ func TestTabConnLifecycleAndMultiTabTOFUReconnect(t *testing.T) {
 	id2 := createHost("prod-02")
 
 	tt := ui.NewTester(app.View, 1280, 820)
+	app.uiMu.Lock()
 	app.connectHost(id1)
 	app.connectHost(id2)
+	app.uiMu.Unlock()
 
 	// Wait for both TOFU events (one active, one queued).
 	waitCond(t, 3*time.Second, func() bool {
@@ -924,13 +926,19 @@ func TestHostCRUDBlankEditPreservesSecretPickerLimitAndDeleteClosesTabs(t *testi
 		Fingerprint:     ssh.FingerprintSHA256(srv.pubKey),
 		PublicKeyBase64: base64.StdEncoding.EncodeToString(srv.pubKey.Marshal()),
 	})
+	app.uiMu.Lock()
 	app.connectHost(updated.ID)
-	if len(app.tabs) != 1 {
-		t.Fatalf("expected 1 open tab, got %d", len(app.tabs))
+	openTabs := len(app.tabs)
+	app.uiMu.Unlock()
+	if openTabs != 1 {
+		t.Fatalf("expected 1 open tab, got %d", openTabs)
 	}
+	app.uiMu.Lock()
 	app.deleteHost(*updated)
-	if len(app.tabs) != 0 || len(app.hosts) != 0 {
-		t.Fatalf("expected tabs & host removed, tabs=%d hosts=%d", len(app.tabs), len(app.hosts))
+	remTabs, remHosts := len(app.tabs), len(app.hosts)
+	app.uiMu.Unlock()
+	if remTabs != 0 || remHosts != 0 {
+		t.Fatalf("expected tabs & host removed, tabs=%d hosts=%d", remTabs, remHosts)
 	}
 
 	// Data dir action hook check.
@@ -1106,22 +1114,31 @@ func TestLazyTerminalRuntimeLoadingAndRetry(t *testing.T) {
 	hostID := app.hosts[0].ID
 
 	// 1. First connect hits simulated transient failure -> error toast, no tab, retryable.
+	app.uiMu.Lock()
 	app.connectHost(hostID)
-	if loadCalls != 1 || len(app.tabs) != 0 || len(app.pendingToasts) == 0 {
-		t.Fatalf("expected failed lazy load toast & no tab: calls=%d tabs=%d toasts=%d", loadCalls, len(app.tabs), len(app.pendingToasts))
+	tabsAfterFail, toastsAfterFail := len(app.tabs), len(app.pendingToasts)
+	app.uiMu.Unlock()
+	if loadCalls != 1 || tabsAfterFail != 0 || toastsAfterFail == 0 {
+		t.Fatalf("expected failed lazy load toast & no tab: calls=%d tabs=%d toasts=%d", loadCalls, tabsAfterFail, toastsAfterFail)
 	}
 
 	// 2. Retry succeeds -> loads once and caches termLoaded=true.
 	shouldFail = false
+	app.uiMu.Lock()
 	app.connectHost(hostID)
-	if loadCalls != 2 || len(app.tabs) != 1 {
-		t.Fatalf("expected successful retry load: calls=%d tabs=%d", loadCalls, len(app.tabs))
+	tabsAfterRetry := len(app.tabs)
+	app.uiMu.Unlock()
+	if loadCalls != 2 || tabsAfterRetry != 1 {
+		t.Fatalf("expected successful retry load: calls=%d tabs=%d", loadCalls, tabsAfterRetry)
 	}
 
 	// 3. Subsequent connectHost and startReplay reuse cached runtime without reloading.
+	app.uiMu.Lock()
 	app.connectHost(hostID)
-	if loadCalls != 2 || len(app.tabs) != 2 {
-		t.Fatalf("expected cached terminal runtime on second connect: calls=%d tabs=%d", loadCalls, len(app.tabs))
+	tabsAfterSecond := len(app.tabs)
+	app.uiMu.Unlock()
+	if loadCalls != 2 || tabsAfterSecond != 2 {
+		t.Fatalf("expected cached terminal runtime on second connect: calls=%d tabs=%d", loadCalls, tabsAfterSecond)
 	}
 
 	rec, err := sshproxy.NewCastRecorder(app.recordingsDir, "lazy-rec", "demo", 80, 24)
@@ -1130,11 +1147,16 @@ func TestLazyTerminalRuntimeLoadingAndRetry(t *testing.T) {
 	}
 	rec.RecordOutput([]byte("hi\r\n"))
 	_, _ = rec.Close()
+	app.uiMu.Lock()
 	app.startReplay(store.Recording{ID: "lazy-rec", HostName: "demo", FilePath: rec.FilePath()})
-	if loadCalls != 2 || app.replay == nil {
-		t.Fatalf("expected cached terminal runtime on replay: calls=%d replay=%v", loadCalls, app.replay)
+	hasReplay := app.replay != nil
+	app.uiMu.Unlock()
+	if loadCalls != 2 || !hasReplay {
+		t.Fatalf("expected cached terminal runtime on replay: calls=%d replay=%v", loadCalls, hasReplay)
 	}
+	app.uiMu.Lock()
 	app.stopReplay()
+	app.uiMu.Unlock()
 
 	// 4. Options.SkipLoadVT short-circuits ensureTerminalRuntime completely.
 	skipApp, err := NewApp(Options{DataDir: t.TempDir(), SkipLoadVT: true})

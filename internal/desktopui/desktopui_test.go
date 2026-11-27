@@ -315,8 +315,8 @@ func TestLocalTerminalTabCreationLifecycleAndVaultLock(t *testing.T) {
 
 	tt := ui.NewTester(app.View, 1280, 820)
 	tt.Frame()
-	if !tt.HasText(">_ 终端") || !tt.HasText(">_ 打开本地终端") {
-		t.Fatalf("expected local terminal actions, got %q", tt.Texts())
+	if !tt.HasText(">_ 打开本地终端") {
+		t.Fatalf("expected empty-workspace local terminal action, got %q", tt.Texts())
 	}
 
 	auditsBefore, err := app.store.ListAuditLogs(500)
@@ -328,9 +328,10 @@ func TestLocalTerminalTabCreationLifecycleAndVaultLock(t *testing.T) {
 		t.Fatalf("ListRecordings before: %v", err)
 	}
 
-	if err := tt.Click(">_ 终端"); err != nil {
-		t.Fatalf("click local terminal action: %v", err)
+	if err := tt.Click(">_ 打开本地终端"); err != nil {
+		t.Fatalf("click empty-workspace local terminal action: %v", err)
 	}
+	tt.Frame()
 	if len(app.tabs) != 1 {
 		t.Fatalf("expected one local tab, got %d", len(app.tabs))
 	}
@@ -338,8 +339,11 @@ func TestLocalTerminalTabCreationLifecycleAndVaultLock(t *testing.T) {
 	if tab.kind != tabKindLocal || tab.host.ID != 0 || tab.conn != nil || tab.term == nil {
 		t.Fatalf("unexpected local tab shape: kind=%v host=%+v conn=%v term=%v", tab.kind, tab.host, tab.conn, tab.term != nil)
 	}
-	if tab.displayName() != "本地终端" || tab.status != "connected" {
-		t.Fatalf("unexpected local tab state: name=%q status=%q", tab.displayName(), tab.status)
+	if tab.displayName() != "本地终端 #1" || tab.status != "connected" || tab.localGen != 1 {
+		t.Fatalf("unexpected local tab state: name=%q status=%q gen=%d", tab.displayName(), tab.status, tab.localGen)
+	}
+	if !tt.HasText("+ 终端") {
+		t.Fatalf("expected tab-bar + 终端 action, got %q", tt.Texts())
 	}
 	if dialCalls.Load() != 0 {
 		t.Fatalf("local terminal triggered %d SSH dial(s)", dialCalls.Load())
@@ -363,53 +367,96 @@ func TestLocalTerminalTabCreationLifecycleAndVaultLock(t *testing.T) {
 		t.Fatalf("local terminal created recordings: before=%d after=%d", len(recordingsBefore), len(recordingsAfter))
 	}
 
+	// Dynamic OSC title updates status bar and strips control characters.
 	app.uiMu.Lock()
-	app.localTerminalExited(tab.id, 7)
+	app.localTerminalTitleChanged(tab.id, tab.localGen, sanitizeTerminalTitle("~/www/ssh-guard\n\x07"))
 	app.uiMu.Unlock()
-	if tab.status != "idle" || !strings.Contains(tab.statusText, "退出码 7") {
+	if tab.statusText != "本地终端 #1 · ~/www/ssh-guard" {
+		t.Fatalf("unexpected title statusText: %q", tab.statusText)
+	}
+
+	// Stale generation callbacks must be ignored.
+	app.uiMu.Lock()
+	app.localTerminalExited(tab.id, tab.localGen+1, 9)
+	app.uiMu.Unlock()
+	if tab.status != "connected" {
+		t.Fatalf("stale exit generation mutated tab status: %q", tab.status)
+	}
+
+	// Matching exit callback marks tab idle and exposes in-place restart button.
+	app.uiMu.Lock()
+	app.localTerminalExited(tab.id, tab.localGen, 7)
+	app.uiMu.Unlock()
+	if tab.status != "idle" || !strings.Contains(tab.statusText, "本地终端 #1") || !strings.Contains(tab.statusText, "退出码 7") {
 		t.Fatalf("unexpected exited tab state: status=%q text=%q", tab.status, tab.statusText)
 	}
 	app.uiMu.Lock()
-	app.localTerminalExited(9999, 0)
+	app.localTerminalExited(9999, 1, 0)
 	app.uiMu.Unlock()
 
-	app.uiMu.Lock()
-	app.openLocalTerminal()
-	app.uiMu.Unlock()
-	if len(app.tabs) != 2 {
-		t.Fatalf("expected two local tabs, got %d", len(app.tabs))
+	tt.Frame()
+	if !tt.HasText("重启终端") {
+		t.Fatalf("expected 重启终端 button on exited local tab, got %q", tt.Texts())
 	}
-	if got := app.tabs[0].stripLabel(1); got != "本地终端" {
-		t.Fatalf("first local label = %q", got)
+	oldTerm := tab.term
+	if err := tt.Click("重启终端"); err != nil {
+		t.Fatalf("click restart local terminal: %v", err)
 	}
-	if got := app.tabs[1].stripLabel(2); got != "本地终端 #2" {
-		t.Fatalf("second local label = %q", got)
-	}
-
-	secondTerm := app.tabs[1].term
-	app.uiMu.Lock()
-	app.closeTabByID(app.tabs[1].id)
-	app.uiMu.Unlock()
-	if len(app.tabs) != 1 {
-		t.Fatalf("closing one local tab left %d tabs", len(app.tabs))
+	tt.Frame()
+	if tab.status != "connected" || tab.localGen != 2 || tab.term == nil || tab.term == oldTerm || tab.statusText != "本地终端 #1" {
+		t.Fatalf("restart did not replace local shell cleanly: status=%q gen=%d statusText=%q", tab.status, tab.localGen, tab.statusText)
 	}
 	select {
-	case <-secondTerm.Done():
+	case <-oldTerm.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("restarted local terminal did not close previous shell")
+	}
+
+	// Open second and third local tabs via the tab bar + 终端 button; closing #1 keeps #2 and #3 stable.
+	if err := tt.Click("+ 终端"); err != nil {
+		t.Fatalf("click tab bar + 终端: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("+ 终端"); err != nil {
+		t.Fatalf("click tab bar + 终端 second time: %v", err)
+	}
+	tt.Frame()
+	if len(app.tabs) != 3 {
+		t.Fatalf("expected three local tabs, got %d", len(app.tabs))
+	}
+	if app.tabs[0].displayName() != "本地终端 #1" || app.tabs[1].displayName() != "本地终端 #2" || app.tabs[2].displayName() != "本地终端 #3" {
+		t.Fatalf("unexpected local tab labels: %q, %q, %q", app.tabs[0].displayName(), app.tabs[1].displayName(), app.tabs[2].displayName())
+	}
+
+	firstTerm := app.tabs[0].term
+	app.uiMu.Lock()
+	app.closeTabByID(app.tabs[0].id)
+	app.uiMu.Unlock()
+	if len(app.tabs) != 2 {
+		t.Fatalf("closing one local tab left %d tabs", len(app.tabs))
+	}
+	if app.tabs[0].displayName() != "本地终端 #2" || app.tabs[1].displayName() != "本地终端 #3" {
+		t.Fatalf("closing #1 renumbered remaining tabs: %q, %q", app.tabs[0].displayName(), app.tabs[1].displayName())
+	}
+	select {
+	case <-firstTerm.Done():
 	case <-time.After(3 * time.Second):
 		t.Fatal("closed local terminal did not release its shell")
 	}
 	app.uiMu.Lock()
+	app.closeTabByID(app.tabs[1].id)
 	app.closeTabByID(app.tabs[0].id)
 	app.uiMu.Unlock()
 	if len(app.tabs) != 0 {
 		t.Fatalf("expected all local tabs closed, got %d", len(app.tabs))
 	}
 
+	// Opening again after closing all local tabs resets numbering back to #1.
 	app.uiMu.Lock()
 	app.openLocalTerminal()
 	app.uiMu.Unlock()
-	if len(app.tabs) != 1 {
-		t.Fatalf("expected local tab before lock, got %d", len(app.tabs))
+	if len(app.tabs) != 1 || app.tabs[0].displayName() != "本地终端 #1" {
+		t.Fatalf("expected reset to 本地终端 #1 after closing all, got count=%d name=%q", len(app.tabs), app.tabs[0].displayName())
 	}
 	lockedTerm := app.tabs[0].term
 	app.uiMu.Lock()
@@ -532,18 +579,18 @@ func TestLocalAndSSHTabsCoexistAcrossResizeAndVaultLock(t *testing.T) {
 
 	tt := ui.NewTester(app.View, 1280, 820)
 	tt.Frame()
-	if err := tt.Click(">_ 终端"); err != nil {
+	if err := tt.Click(">_ 打开本地终端"); err != nil {
 		t.Fatalf("open first local terminal: %v", err)
 	}
 	tt.Frame()
-	if err := tt.Click(">_ 终端"); err != nil {
-		t.Fatalf("open second local terminal: %v", err)
+	if err := tt.Click("+ 终端"); err != nil {
+		t.Fatalf("open second local terminal via tab bar: %v", err)
 	}
 	tt.Frame()
 	if len(app.tabs) != 2 {
 		t.Fatalf("expected two local tabs, got %d", len(app.tabs))
 	}
-	if !tt.HasText("本地终端 #2") {
+	if !tt.HasText("本地终端 #1") || !tt.HasText("本地终端 #2") {
 		t.Fatalf("expected two local tab labels, got %q", tt.Texts())
 	}
 

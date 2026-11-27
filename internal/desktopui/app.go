@@ -85,9 +85,10 @@ type App struct {
 	deleteTarget *store.Host
 
 	// Multi-tab Ghostty terminal workspace
-	tabs       []*SessionTab
-	activeTab  int
-	nextTabSeq int
+	tabs         []*SessionTab
+	activeTab    int
+	nextTabSeq   int
+	nextLocalSeq int
 
 	// Queued TOFU / MITM verification modal
 	tofuPending *tofuItem

@@ -76,20 +76,17 @@ The desktop application SHALL support opening multiple concurrent SSH sessions (
 
 ### Requirement: Local login-shell tabs in the native terminal workspace
 While the vault is unlocked, the desktop workspace SHALL allow the user to open
-a local login-shell tab rendered by the native terminal engine without selecting
-or creating an SSH host. Local tabs SHALL remain outside the SSH connection,
-TOFU, command-guard, audit, and recording flows.
+multiple concurrent local login-shell tabs rendered by the native terminal engine
+without selecting or creating an SSH host. Local tabs SHALL remain outside the
+SSH connection, TOFU, command-guard, audit, and recording flows.
 
-#### Scenario: Opening a local terminal starts a host-independent shell tab
-- **WHEN** the user activates the local terminal action in the unlocked workspace
-- **THEN** a new active tab labeled as a local terminal opens, runs the user's
-  local login shell in a pseudo-terminal, and performs no SSH dial, TOFU check,
-  command-guard setup, audit write, or `.cast` recording creation
+#### Scenario: Opening local terminals starts independent numbered shell tabs
+- **WHEN** the user activates the local terminal creation action from the empty workspace or the session tab bar
+- **THEN** a new active tab opens with a stable sequential label (such as `本地终端 #1`, `本地终端 #2`), reflects shell title updates in the workspace status bar, runs the user's local login shell in an independent pseudo-terminal, and performs no SSH dial, TOFU check, command-guard setup, audit write, or `.cast` recording creation
 
-#### Scenario: Local shell exit is reported without disturbing SSH tabs
-- **WHEN** the local login shell exits or fails to start
-- **THEN** the affected local tab shows the exit or startup error inline, keeps
-  the tab closable, and leaves all SSH session tabs connected and unchanged
+#### Scenario: Local shell exit is reported with in-place restart without disturbing SSH tabs
+- **WHEN** a local login shell exits or fails to start
+- **THEN** the affected local tab reports the exit or startup status in the workspace status bar, offers an in-place restart action alongside closing the tab, and leaves all other local and SSH session tabs connected and unchanged
 
 #### Scenario: Closing a local terminal tab releases its shell resources
 - **WHEN** the user closes a local terminal tab

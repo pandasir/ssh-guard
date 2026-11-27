@@ -9,6 +9,11 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+type termViewKey struct {
+	id  int
+	gen uint64
+}
+
 func renderBackendLabel() string {
 	if os.Getenv("MYGO_GPU") == "0" {
 		return "Ghostty CPU"
@@ -54,6 +59,11 @@ func (a *App) renderWorkspace(c *ui.Context) {
 					if active != nil && active.kind == tabKindSSH && (active.status == "idle" || active.status == "error") {
 						if ui.Button(c, "重连").Padding(5, 10).Clicked() {
 							a.reconnectTab(active)
+						}
+					}
+					if active != nil && active.kind == tabKindLocal && (active.status == "idle" || active.status == "error") {
+						if ui.Button(c, "重启终端").Padding(5, 10).Clicked() {
+							a.restartLocalTerminal(active)
 						}
 					}
 					if active != nil {
@@ -112,6 +122,13 @@ func (a *App) renderWorkspace(c *ui.Context) {
 								})
 							})
 						}
+						ui.ButtonBase(c.Key("tabbar-new-local")).Label("新建本地终端").Padding(4, 10).Radius(6).
+							Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d")).
+							OnClick(func() {
+								a.openLocalTerminal()
+							}).Children(func() {
+							ui.Text(c, "+ 终端").FontSize(12).TextColor(ui.Hex("#e6edf3")).SingleLine()
+						})
 					})
 				})
 		}
@@ -121,7 +138,7 @@ func (a *App) renderWorkspace(c *ui.Context) {
 			ui.Column(c).Grow(1).Center().Gap(10).Padding(24).Children(func() {
 				ui.Text(c, ">_").FontSize(40).Bold().TextColor(ui.Hex("#30363d"))
 				ui.Text(c, "SSH 与本地 Shell 原生终端").FontSize(17).Bold()
-				ui.Text(c, "选择左侧主机连接，或直接打开本地终端。SSH 密码和私钥仅在本地 Go 核心握手瞬间解密并立即内存清零，全部终端由 Ghostty 引擎原生渲染。").
+				ui.Text(c, "选择左侧主机连接，或直接打开本地终端（支持同时打开多个）。SSH 密码和私钥仅在本地 Go 核心握手瞬间解密并立即内存清零，全部终端由 Ghostty 引擎原生渲染。").
 					FontSize(13).TextColor(ui.Hex("#8b949e")).MaxWidth(480)
 				if ui.PrimaryButton(c, ">_ 打开本地终端").Padding(6, 14).Clicked() {
 					a.openLocalTerminal()
@@ -129,7 +146,7 @@ func (a *App) renderWorkspace(c *ui.Context) {
 			})
 		} else {
 			ui.Box(c).Grow(1).FillWidth().Padding(6).Background(ui.Hex("#0a0d12")).Children(func() {
-				terminal.View(c.Key(active.id), active.term).Fill().AutoFocus()
+				terminal.View(c.Key(termViewKey{id: active.id, gen: active.localGen}), active.term).Fill().AutoFocus()
 			})
 		}
 	})

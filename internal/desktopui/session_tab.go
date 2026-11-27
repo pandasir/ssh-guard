@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -232,11 +233,12 @@ func (tc *TabConn) Close() error {
 	return nil
 }
 
-// SessionTab owns one native Ghostty terminal instance and its SSH connection lifecycle.
+// SessionTab owns one native Ghostty terminal instance and its SSH or local shell lifecycle.
 type SessionTab struct {
 	id         int
 	kind       tabKind
 	title      string
+	shellTitle string
 	host       store.Host
 	conn       *TabConn
 	term       *terminal.Terminal
@@ -246,7 +248,8 @@ type SessionTab struct {
 	dialCancel context.CancelFunc
 	closing    bool
 
-	localClosed atomic.Bool
+	localGen    uint64
+	localClosed *atomic.Bool
 }
 
 func (tab *SessionTab) displayName() string {
@@ -264,7 +267,7 @@ func (tab *SessionTab) displayName() string {
 
 func (tab *SessionTab) countKey() string {
 	if tab.kind == tabKindLocal {
-		return "local"
+		return "local:" + tab.displayName()
 	}
 	return fmt.Sprintf("ssh:%d", tab.host.ID)
 }
@@ -275,6 +278,35 @@ func (tab *SessionTab) stripLabel(seen int) string {
 		label = fmt.Sprintf("%s #%d", label, seen)
 	}
 	return label
+}
+
+func sanitizeTerminalTitle(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range raw {
+		switch {
+		case r == '\r' || r == '\n' || r == '\t' || r == ' ':
+			if !prevSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case r < 0x20 || r == 0x7f:
+			continue
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
+	}
+	cleaned := strings.TrimSpace(b.String())
+	runes := []rune(cleaned)
+	const maxTitleRunes = 56
+	if len(runes) > maxTitleRunes {
+		cleaned = string(runes[:maxTitleRunes-1]) + "…"
+	}
+	return cleaned
 }
 
 func (a *App) connectHost(hostID int64) {
@@ -323,6 +355,37 @@ func (a *App) connectHost(hostID int64) {
 	a.startTabDial(tab)
 }
 
+func (a *App) newLocalTerminalInstance(tabID int, gen uint64, closed *atomic.Bool) (*terminal.Terminal, error) {
+	home, _ := os.UserHomeDir()
+	return terminal.New(terminal.Options{
+		Dir:              home,
+		ShellIntegration: true,
+		Scrollback:       a.scrollbackBytes,
+		ImageLimit:       -1,
+		NoBlink:          true,
+		NoExitMessage:    true,
+		Font:             terminal.Font{Size: 14},
+		Theme:            terminal.DarkTheme(),
+		OnTitle: func(title string) {
+			if closed.Load() {
+				return
+			}
+			clean := sanitizeTerminalTitle(title)
+			a.runUI(func() {
+				a.localTerminalTitleChanged(tabID, gen, clean)
+			})
+		},
+		OnExit: func(code int) {
+			if closed.Load() {
+				return
+			}
+			a.runUI(func() {
+				a.localTerminalExited(tabID, gen, code)
+			})
+		},
+	})
+}
+
 // openLocalTerminal opens a local login shell in the same native Ghostty tab
 // workspace. It deliberately bypasses the SSH session core, recordings, audit
 // logs, TOFU checks, and command guard.
@@ -336,60 +399,105 @@ func (a *App) openLocalTerminal() {
 		return
 	}
 
-	a.nextTabSeq++
-	tabID := a.nextTabSeq
-	home, _ := os.UserHomeDir()
-	tab := &SessionTab{
-		id:         tabID,
-		kind:       tabKindLocal,
-		title:      "本地终端",
-		status:     "connected",
-		statusText: "本地终端",
-	}
+	tabID := a.nextTabSeq + 1
+	localSeq := a.nextLocalSeq + 1
+	gen := uint64(1)
+	closed := &atomic.Bool{}
 
-	term, err := terminal.New(terminal.Options{
-		Dir:              home,
-		ShellIntegration: true,
-		Scrollback:       a.scrollbackBytes,
-		ImageLimit:       -1,
-		NoBlink:          true,
-		NoExitMessage:    true,
-		Font:             terminal.Font{Size: 14},
-		Theme:            terminal.DarkTheme(),
-		OnExit: func(code int) {
-			if tab.localClosed.Load() {
-				return
-			}
-			a.runUI(func() {
-				a.localTerminalExited(tabID, code)
-			})
-		},
-	})
+	term, err := a.newLocalTerminalInstance(tabID, gen, closed)
 	if err != nil {
 		a.pushToast("本地终端初始化失败", err.Error(), "error")
 		return
 	}
 
-	tab.term = term
+	a.nextTabSeq = tabID
+	a.nextLocalSeq = localSeq
+	title := fmt.Sprintf("本地终端 #%d", localSeq)
+	tab := &SessionTab{
+		id:          tabID,
+		kind:        tabKindLocal,
+		title:       title,
+		term:        term,
+		status:      "connected",
+		statusText:  title,
+		localGen:    gen,
+		localClosed: closed,
+	}
 	a.tabs = append(a.tabs, tab)
 	a.activeTab = len(a.tabs) - 1
 }
 
-// localTerminalExited updates a surviving local tab after its shell exits. It
-// ignores callbacks that race with tab close or vault teardown.
-func (a *App) localTerminalExited(tabID, code int) {
+// restartLocalTerminal starts a fresh local login shell in-place inside an
+// existing local terminal tab (for example after the previous shell exited).
+func (a *App) restartLocalTerminal(tab *SessionTab) {
+	if tab == nil || tab.closing || tab.kind != tabKindLocal || !a.unlocked {
+		return
+	}
+	a.touchActivity()
+	if err := a.ensureTerminalRuntime(); err != nil {
+		a.pushToast("终端运行库初始化失败", err.Error(), "error")
+		return
+	}
+
+	newGen := tab.localGen + 1
+	newClosed := &atomic.Bool{}
+	newTerm, err := a.newLocalTerminalInstance(tab.id, newGen, newClosed)
+	if err != nil {
+		a.pushToast("本地终端重启失败", err.Error(), "error")
+		return
+	}
+
+	if tab.localClosed != nil {
+		tab.localClosed.Store(true)
+	}
+	if tab.term != nil {
+		_ = tab.term.Close()
+	}
+
+	tab.localGen = newGen
+	tab.localClosed = newClosed
+	tab.term = newTerm
+	tab.shellTitle = ""
+	tab.status = "connected"
+	tab.statusText = tab.displayName()
+	debug.FreeOSMemory()
+}
+
+// localTerminalTitleChanged updates the status bar title of an active local tab
+// when its shell emits an OSC title update, ignoring stale callbacks.
+func (a *App) localTerminalTitleChanged(tabID int, gen uint64, title string) {
 	tab := a.findTabByID(tabID)
-	if tab == nil || tab.closing || tab.kind != tabKindLocal {
+	if tab == nil || tab.closing || tab.kind != tabKindLocal || tab.localGen != gen {
+		return
+	}
+	tab.shellTitle = title
+	if tab.status != "connected" {
+		return
+	}
+	base := tab.displayName()
+	if title != "" && title != base {
+		tab.statusText = fmt.Sprintf("%s · %s", base, title)
+	} else {
+		tab.statusText = base
+	}
+}
+
+// localTerminalExited updates a surviving local tab after its shell exits. It
+// ignores callbacks that race with tab close, restart, or vault teardown.
+func (a *App) localTerminalExited(tabID int, gen uint64, code int) {
+	tab := a.findTabByID(tabID)
+	if tab == nil || tab.closing || tab.kind != tabKindLocal || tab.localGen != gen {
 		return
 	}
 	tab.status = "idle"
+	base := tab.displayName()
 	switch {
 	case code < 0:
-		tab.statusText = "本地终端启动失败"
+		tab.statusText = fmt.Sprintf("%s · 启动失败", base)
 	case code == 0:
-		tab.statusText = "本地会话已结束"
+		tab.statusText = fmt.Sprintf("%s · 本地会话已结束", base)
 	default:
-		tab.statusText = fmt.Sprintf("本地会话已结束 (退出码 %d)", code)
+		tab.statusText = fmt.Sprintf("%s · 本地会话已结束 (退出码 %d)", base, code)
 	}
 	debug.FreeOSMemory()
 }
@@ -565,7 +673,7 @@ func (a *App) closeTabByID(id int) {
 	}
 	tab := a.tabs[idx]
 	tab.closing = true
-	if tab.kind == tabKindLocal {
+	if tab.kind == tabKindLocal && tab.localClosed != nil {
 		tab.localClosed.Store(true)
 	}
 	if tab.dialCancel != nil {
@@ -581,6 +689,9 @@ func (a *App) closeTabByID(id int) {
 		tab.term = nil
 	}
 	a.tabs = append(a.tabs[:idx], a.tabs[idx+1:]...)
+	if a.openLocalTabCount() == 0 {
+		a.nextLocalSeq = 0
+	}
 	if len(a.tabs) == 0 {
 		a.activeTab = 0
 	} else if a.activeTab >= len(a.tabs) {
@@ -607,9 +718,10 @@ func (a *App) closeAllTabs() {
 	tabs := append([]*SessionTab(nil), a.tabs...)
 	a.tabs = nil
 	a.activeTab = 0
+	a.nextLocalSeq = 0
 	for _, tab := range tabs {
 		tab.closing = true
-		if tab.kind == tabKindLocal {
+		if tab.kind == tabKindLocal && tab.localClosed != nil {
 			tab.localClosed.Store(true)
 		}
 		if tab.dialCancel != nil {

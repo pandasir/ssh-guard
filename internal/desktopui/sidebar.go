@@ -36,6 +36,16 @@ func (a *App) openTabCountForHost(hostID int64) int {
 	return n
 }
 
+func (a *App) openLocalTabCount() int {
+	n := 0
+	for _, t := range a.tabs {
+		if t.kind == tabKindLocal {
+			n++
+		}
+	}
+	return n
+}
+
 func (a *App) renderSidebar(c *ui.Context) {
 	active := a.activeSessionTab()
 
@@ -55,15 +65,10 @@ func (a *App) renderSidebar(c *ui.Context) {
 				})
 				ui.Text(c, "信封加密 · TOFU · 命令守卫").FontSize(11).TextColor(ui.Hex("#8b949e"))
 			})
-			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-				if ui.Button(c, ">_ 终端").Padding(5, 8).Clicked() {
-					a.openLocalTerminal()
-				}
-				if ui.PrimaryButton(c, "+ 主机").Padding(5, 10).Clicked() {
-					a.touchActivity()
-					a.openAddHostModal()
-				}
-			})
+			if ui.PrimaryButton(c, "+ 主机").Padding(5, 10).Clicked() {
+				a.touchActivity()
+				a.openAddHostModal()
+			}
 		})
 
 		// Host search box

@@ -29,7 +29,7 @@ func (a *App) filteredHosts() []store.Host {
 func (a *App) openTabCountForHost(hostID int64) int {
 	n := 0
 	for _, t := range a.tabs {
-		if t.host.ID == hostID {
+		if t.kind == tabKindSSH && t.host.ID == hostID {
 			n++
 		}
 	}
@@ -55,10 +55,15 @@ func (a *App) renderSidebar(c *ui.Context) {
 				})
 				ui.Text(c, "信封加密 · TOFU · 命令守卫").FontSize(11).TextColor(ui.Hex("#8b949e"))
 			})
-			if ui.PrimaryButton(c, "+ 主机").Padding(5, 10).Clicked() {
-				a.touchActivity()
-				a.openAddHostModal()
-			}
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				if ui.Button(c, ">_ 终端").Padding(5, 8).Clicked() {
+					a.openLocalTerminal()
+				}
+				if ui.PrimaryButton(c, "+ 主机").Padding(5, 10).Clicked() {
+					a.touchActivity()
+					a.openAddHostModal()
+				}
+			})
 		})
 
 		// Host search box
@@ -83,7 +88,7 @@ func (a *App) renderSidebar(c *ui.Context) {
 			}
 			for _, host := range hosts {
 				h := host
-				isActive := active != nil && active.host.ID == h.ID
+				isActive := active != nil && active.kind == tabKindSSH && active.host.ID == h.ID
 				border := ui.Hex("#30363d")
 				if isActive {
 					border = ui.Hex("#3fb950")

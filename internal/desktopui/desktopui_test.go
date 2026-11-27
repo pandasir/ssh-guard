@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,14 +90,14 @@ func newTestConnPair() (net.Conn, net.Conn) {
 	return &testPipeConn{r: b, w: a}, &testPipeConn{r: a, w: b}
 }
 
-func (c *testPipeConn) Read(b []byte) (int, error)         { return c.r.Read(b) }
-func (c *testPipeConn) Write(b []byte) (int, error)        { return c.w.Write(b) }
-func (c *testPipeConn) Close() error                       { _ = c.w.Close(); return c.r.Close() }
-func (c *testPipeConn) LocalAddr() net.Addr                { return testPipeAddr("local") }
-func (c *testPipeConn) RemoteAddr() net.Addr               { return testPipeAddr("remote") }
-func (c *testPipeConn) SetDeadline(time.Time) error        { return nil }
-func (c *testPipeConn) SetReadDeadline(time.Time) error    { return nil }
-func (c *testPipeConn) SetWriteDeadline(time.Time) error   { return nil }
+func (c *testPipeConn) Read(b []byte) (int, error)       { return c.r.Read(b) }
+func (c *testPipeConn) Write(b []byte) (int, error)      { return c.w.Write(b) }
+func (c *testPipeConn) Close() error                     { _ = c.w.Close(); return c.r.Close() }
+func (c *testPipeConn) LocalAddr() net.Addr              { return testPipeAddr("local") }
+func (c *testPipeConn) RemoteAddr() net.Addr             { return testPipeAddr("remote") }
+func (c *testPipeConn) SetDeadline(time.Time) error      { return nil }
+func (c *testPipeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *testPipeConn) SetWriteDeadline(time.Time) error { return nil }
 
 type testSSHServer struct {
 	pubKey ssh.PublicKey
@@ -260,7 +262,7 @@ func TestUnlockSetupFlowSecretClearingAndLock(t *testing.T) {
 	if app.unlockPass != "" || app.unlockConfirm != "" {
 		t.Fatalf("expected password fields cleared after setup")
 	}
-	if !tt.HasText("零凭据暴露 SSH 原生安全终端") {
+	if !tt.HasText("SSH 与本地 Shell 原生终端") {
 		t.Fatalf("expected workspace empty state, got %q", tt.Texts())
 	}
 
@@ -284,6 +286,369 @@ func TestUnlockSetupFlowSecretClearingAndLock(t *testing.T) {
 	app.submitUnlock()
 	if !app.unlocked || !app.vault.IsUnlocked() {
 		t.Fatalf("expected unlock to succeed, err=%q", app.unlockErr)
+	}
+}
+
+func TestLocalTerminalTabCreationLifecycleAndVaultLock(t *testing.T) {
+	if err := terminal.Load(); err != nil {
+		t.Skipf("terminal runtime unavailable: %v", err)
+	}
+	var dialCalls atomic.Int32
+	app, err := NewApp(Options{
+		DataDir: t.TempDir(),
+		DialConn: func(ctx context.Context, addr string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errors.New("unexpected SSH dial from local terminal")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	if !app.unlocked {
+		t.Fatalf("unlock failed: %s", app.unlockErr)
+	}
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	tt.Frame()
+	if !tt.HasText(">_ 终端") || !tt.HasText(">_ 打开本地终端") {
+		t.Fatalf("expected local terminal actions, got %q", tt.Texts())
+	}
+
+	auditsBefore, err := app.store.ListAuditLogs(500)
+	if err != nil {
+		t.Fatalf("ListAuditLogs before: %v", err)
+	}
+	recordingsBefore, err := app.store.ListRecordings(200)
+	if err != nil {
+		t.Fatalf("ListRecordings before: %v", err)
+	}
+
+	if err := tt.Click(">_ 终端"); err != nil {
+		t.Fatalf("click local terminal action: %v", err)
+	}
+	if len(app.tabs) != 1 {
+		t.Fatalf("expected one local tab, got %d", len(app.tabs))
+	}
+	tab := app.tabs[0]
+	if tab.kind != tabKindLocal || tab.host.ID != 0 || tab.conn != nil || tab.term == nil {
+		t.Fatalf("unexpected local tab shape: kind=%v host=%+v conn=%v term=%v", tab.kind, tab.host, tab.conn, tab.term != nil)
+	}
+	if tab.displayName() != "本地终端" || tab.status != "connected" {
+		t.Fatalf("unexpected local tab state: name=%q status=%q", tab.displayName(), tab.status)
+	}
+	if dialCalls.Load() != 0 {
+		t.Fatalf("local terminal triggered %d SSH dial(s)", dialCalls.Load())
+	}
+	if app.tofuPending != nil || len(app.tofuQueue) != 0 {
+		t.Fatal("local terminal unexpectedly opened TOFU verification")
+	}
+
+	auditsAfter, err := app.store.ListAuditLogs(500)
+	if err != nil {
+		t.Fatalf("ListAuditLogs after: %v", err)
+	}
+	recordingsAfter, err := app.store.ListRecordings(200)
+	if err != nil {
+		t.Fatalf("ListRecordings after: %v", err)
+	}
+	if len(auditsAfter) != len(auditsBefore) {
+		t.Fatalf("local terminal wrote audit logs: before=%d after=%d", len(auditsBefore), len(auditsAfter))
+	}
+	if len(recordingsAfter) != len(recordingsBefore) {
+		t.Fatalf("local terminal created recordings: before=%d after=%d", len(recordingsBefore), len(recordingsAfter))
+	}
+
+	app.uiMu.Lock()
+	app.localTerminalExited(tab.id, 7)
+	app.uiMu.Unlock()
+	if tab.status != "idle" || !strings.Contains(tab.statusText, "退出码 7") {
+		t.Fatalf("unexpected exited tab state: status=%q text=%q", tab.status, tab.statusText)
+	}
+	app.uiMu.Lock()
+	app.localTerminalExited(9999, 0)
+	app.uiMu.Unlock()
+
+	app.uiMu.Lock()
+	app.openLocalTerminal()
+	app.uiMu.Unlock()
+	if len(app.tabs) != 2 {
+		t.Fatalf("expected two local tabs, got %d", len(app.tabs))
+	}
+	if got := app.tabs[0].stripLabel(1); got != "本地终端" {
+		t.Fatalf("first local label = %q", got)
+	}
+	if got := app.tabs[1].stripLabel(2); got != "本地终端 #2" {
+		t.Fatalf("second local label = %q", got)
+	}
+
+	secondTerm := app.tabs[1].term
+	app.uiMu.Lock()
+	app.closeTabByID(app.tabs[1].id)
+	app.uiMu.Unlock()
+	if len(app.tabs) != 1 {
+		t.Fatalf("closing one local tab left %d tabs", len(app.tabs))
+	}
+	select {
+	case <-secondTerm.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("closed local terminal did not release its shell")
+	}
+	app.uiMu.Lock()
+	app.closeTabByID(app.tabs[0].id)
+	app.uiMu.Unlock()
+	if len(app.tabs) != 0 {
+		t.Fatalf("expected all local tabs closed, got %d", len(app.tabs))
+	}
+
+	app.uiMu.Lock()
+	app.openLocalTerminal()
+	app.uiMu.Unlock()
+	if len(app.tabs) != 1 {
+		t.Fatalf("expected local tab before lock, got %d", len(app.tabs))
+	}
+	lockedTerm := app.tabs[0].term
+	app.uiMu.Lock()
+	app.LockVault("本地终端锁定测试")
+	app.uiMu.Unlock()
+	if len(app.tabs) != 0 || app.unlocked || app.vault.IsUnlocked() {
+		t.Fatalf("lock did not close local tabs: tabs=%d unlocked=%v vault=%v", len(app.tabs), app.unlocked, app.vault.IsUnlocked())
+	}
+	select {
+	case <-lockedTerm.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("vault lock did not release the local shell")
+	}
+
+	logs, err := app.store.ListAuditLogs(500)
+	if err != nil {
+		t.Fatalf("ListAuditLogs after lock: %v", err)
+	}
+	for _, entry := range logs {
+		if entry.EventType == "CONNECT" || entry.EventType == "DISCONNECT" {
+			t.Fatalf("local terminal produced SSH audit entry: %+v", entry)
+		}
+	}
+}
+
+func TestLocalTabLabelsControlsAndHostIsolation(t *testing.T) {
+	var dialCalls atomic.Int32
+	app, err := NewApp(Options{
+		DataDir: t.TempDir(),
+		DialConn: func(ctx context.Context, addr string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errors.New("unexpected SSH dial from local tab")
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	if !app.unlocked {
+		t.Fatalf("unlock failed: %s", app.unlockErr)
+	}
+
+	local1 := &SessionTab{id: 1, kind: tabKindLocal, title: "本地终端", status: "connected", statusText: "本地终端"}
+	local2 := &SessionTab{id: 2, kind: tabKindLocal, title: "本地终端", status: "connected", statusText: "本地终端"}
+	sshTab := &SessionTab{
+		id:         3,
+		kind:       tabKindSSH,
+		host:       store.Host{ID: 7, Name: "prod"},
+		status:     "connected",
+		statusText: "已连接 · prod",
+	}
+	app.tabs = []*SessionTab{local1, local2, sshTab}
+	app.activeTab = 0
+	app.nextTabSeq = 3
+
+	if got := local1.stripLabel(1); got != "本地终端" {
+		t.Fatalf("first local label = %q", got)
+	}
+	if got := local2.stripLabel(2); got != "本地终端 #2" {
+		t.Fatalf("second local label = %q", got)
+	}
+	if app.openTabCountForHost(0) != 0 || app.openTabCountForHost(7) != 1 {
+		t.Fatalf("unexpected host tab counts: local=%d ssh=%d", app.openTabCountForHost(0), app.openTabCountForHost(7))
+	}
+
+	app.closeTabsForHost(0)
+	if len(app.tabs) != 3 {
+		t.Fatalf("host-scoped close removed local tabs: %d remain", len(app.tabs))
+	}
+	app.reconnectTab(local1)
+	if dialCalls.Load() != 0 || local1.status != "connected" {
+		t.Fatalf("local reconnect touched SSH path: dials=%d status=%q", dialCalls.Load(), local1.status)
+	}
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	tt.Frame()
+	if !tt.HasText("本地终端 #2") {
+		t.Fatalf("expected local tab sequence label, got %q", tt.Texts())
+	}
+	if !tt.HasText("关闭终端") || tt.HasText("断开连接") || tt.HasText("重连") {
+		t.Fatalf("unexpected local workspace controls: %q", tt.Texts())
+	}
+	if !tt.HasText(">_ 打开本地终端") {
+		t.Fatalf("expected empty-workspace local action, got %q", tt.Texts())
+	}
+
+	app.activeTab = 2
+	sshTab.status = "idle"
+	sshTab.statusText = "会话已断开 · prod"
+	tt.Frame()
+	if !tt.HasText("重连") || !tt.HasText("断开连接") {
+		t.Fatalf("expected SSH reconnect/disconnect controls, got %q", tt.Texts())
+	}
+}
+
+func TestLocalAndSSHTabsCoexistAcrossResizeAndVaultLock(t *testing.T) {
+	if err := terminal.Load(); err != nil {
+		t.Skipf("terminal runtime unavailable: %v", err)
+	}
+	srv := newTestSSHServer(t, "pass123")
+	app, err := NewApp(Options{
+		DataDir:  t.TempDir(),
+		DialConn: srv.dial,
+	})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	if !app.unlocked {
+		t.Fatalf("unlock failed: %s", app.unlockErr)
+	}
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	tt.Frame()
+	if err := tt.Click(">_ 终端"); err != nil {
+		t.Fatalf("open first local terminal: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click(">_ 终端"); err != nil {
+		t.Fatalf("open second local terminal: %v", err)
+	}
+	tt.Frame()
+	if len(app.tabs) != 2 {
+		t.Fatalf("expected two local tabs, got %d", len(app.tabs))
+	}
+	if !tt.HasText("本地终端 #2") {
+		t.Fatalf("expected two local tab labels, got %q", tt.Texts())
+	}
+
+	app.openAddHostModal()
+	app.hostModal.name = "smoke-ssh"
+	app.hostModal.username = "ops"
+	app.hostModal.address = "127.0.0.1"
+	app.hostModal.port = "22"
+	app.hostModal.authType = store.AuthPassword
+	app.hostModal.password = "pass123"
+	app.saveHostForm()
+	if app.hostModal.errMsg != "" {
+		t.Fatalf("save SSH host: %s", app.hostModal.errMsg)
+	}
+	host := app.hosts[0]
+	if err := app.store.UpsertKnownHost(&store.KnownHost{
+		HostID:          host.ID,
+		KeyType:         srv.pubKey.Type(),
+		Fingerprint:     ssh.FingerprintSHA256(srv.pubKey),
+		PublicKeyBase64: base64.StdEncoding.EncodeToString(srv.pubKey.Marshal()),
+	}); err != nil {
+		t.Fatalf("trust test SSH host: %v", err)
+	}
+	app.connectHost(host.ID)
+
+	waitCond(t, 3*time.Second, func() bool {
+		app.uiMu.Lock()
+		defer app.uiMu.Unlock()
+		if len(app.tabs) != 3 {
+			return false
+		}
+		sshTab := app.tabs[2]
+		return sshTab.kind == tabKindSSH && sshTab.status == "connected"
+	}, "SSH tab connected beside local tabs")
+
+	for i := 0; i < 2; i++ {
+		app.uiMu.Lock()
+		app.activeTab = i
+		localTab := app.tabs[i]
+		app.uiMu.Unlock()
+		tt.Frame()
+		marker := fmt.Sprintf("LOCAL-%d-OK", i+1)
+		localTab.term.Send([]byte(fmt.Sprintf("printf '%s\\n'\r", marker)))
+		waitCond(t, 3*time.Second, func() bool {
+			return strings.Contains(localTab.term.Text(), marker)
+		}, "local terminal command output")
+	}
+
+	tt.SetSize(1180, 760)
+	app.uiMu.Lock()
+	app.activeTab = 2
+	sshTab := app.tabs[2]
+	app.uiMu.Unlock()
+	tt.Frame()
+	waitCond(t, 3*time.Second, func() bool {
+		return strings.Contains(sshTab.term.Text(), "WELCOME-NATIVE-GHOSTTY")
+	}, "SSH tab rendered after resize")
+	sshTab.term.Send([]byte("echo SSH-TAB-OK\r"))
+	waitCond(t, 3*time.Second, func() bool {
+		return strings.Contains(sshTab.term.Text(), "SSH-TAB-OK")
+	}, "SSH terminal command output")
+
+	app.uiMu.Lock()
+	app.activeTab = 0
+	app.uiMu.Unlock()
+	tt.Frame()
+	if !tt.HasText("本地终端 #2") || !tt.HasText("smoke-ssh") {
+		t.Fatalf("tabs lost after resize: %q", tt.Texts())
+	}
+
+	app.uiMu.Lock()
+	app.LockVault("本地与 SSH 标签集成测试")
+	app.uiMu.Unlock()
+	if len(app.tabs) != 0 || app.unlocked || app.vault.IsUnlocked() {
+		t.Fatalf("lock did not close all tabs: tabs=%d unlocked=%v vault=%v", len(app.tabs), app.unlocked, app.vault.IsUnlocked())
+	}
+
+	recordings, err := app.store.ListRecordings(200)
+	if err != nil {
+		t.Fatalf("ListRecordings: %v", err)
+	}
+	if len(recordings) != 1 || recordings[0].HostName != host.Name {
+		t.Fatalf("expected only the SSH session recording, got %+v", recordings)
+	}
+	logs, err := app.store.ListAuditLogs(500)
+	if err != nil {
+		t.Fatalf("ListAuditLogs: %v", err)
+	}
+	connectCount, disconnectCount := 0, 0
+	for _, entry := range logs {
+		switch entry.EventType {
+		case "CONNECT":
+			connectCount++
+			if entry.HostID != host.ID {
+				t.Fatalf("unexpected CONNECT from local tab: %+v", entry)
+			}
+		case "DISCONNECT":
+			disconnectCount++
+			if entry.HostID != host.ID {
+				t.Fatalf("unexpected DISCONNECT from local tab: %+v", entry)
+			}
+		}
+	}
+	if connectCount != 1 || disconnectCount != 1 {
+		t.Fatalf("unexpected SSH audit counts: connect=%d disconnect=%d", connectCount, disconnectCount)
 	}
 }
 

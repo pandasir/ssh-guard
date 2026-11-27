@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ssh-guard/internal/sshproxy"
@@ -19,6 +21,13 @@ import (
 const (
 	tabConnMaxBuf          = 64 * 1024
 	tabConnShrinkThreshold = 16 * 1024
+)
+
+type tabKind uint8
+
+const (
+	tabKindSSH tabKind = iota
+	tabKindLocal
 )
 
 // TabConn implements terminal.Options.Conn (io.ReadWriteCloser + Resize) as a
@@ -226,6 +235,8 @@ func (tc *TabConn) Close() error {
 // SessionTab owns one native Ghostty terminal instance and its SSH connection lifecycle.
 type SessionTab struct {
 	id         int
+	kind       tabKind
+	title      string
 	host       store.Host
 	conn       *TabConn
 	term       *terminal.Terminal
@@ -234,6 +245,36 @@ type SessionTab struct {
 
 	dialCancel context.CancelFunc
 	closing    bool
+
+	localClosed atomic.Bool
+}
+
+func (tab *SessionTab) displayName() string {
+	if tab == nil {
+		return ""
+	}
+	if tab.kind == tabKindLocal {
+		if tab.title != "" {
+			return tab.title
+		}
+		return "本地终端"
+	}
+	return tab.host.Name
+}
+
+func (tab *SessionTab) countKey() string {
+	if tab.kind == tabKindLocal {
+		return "local"
+	}
+	return fmt.Sprintf("ssh:%d", tab.host.ID)
+}
+
+func (tab *SessionTab) stripLabel(seen int) string {
+	label := tab.displayName()
+	if seen > 1 {
+		label = fmt.Sprintf("%s #%d", label, seen)
+	}
+	return label
 }
 
 func (a *App) connectHost(hostID int64) {
@@ -269,6 +310,7 @@ func (a *App) connectHost(hostID int64) {
 
 	tab := &SessionTab{
 		id:         tabID,
+		kind:       tabKindSSH,
 		host:       *host,
 		conn:       tc,
 		term:       term,
@@ -281,8 +323,79 @@ func (a *App) connectHost(hostID int64) {
 	a.startTabDial(tab)
 }
 
+// openLocalTerminal opens a local login shell in the same native Ghostty tab
+// workspace. It deliberately bypasses the SSH session core, recordings, audit
+// logs, TOFU checks, and command guard.
+func (a *App) openLocalTerminal() {
+	a.touchActivity()
+	if !a.unlocked {
+		return
+	}
+	if err := a.ensureTerminalRuntime(); err != nil {
+		a.pushToast("终端运行库初始化失败", err.Error(), "error")
+		return
+	}
+
+	a.nextTabSeq++
+	tabID := a.nextTabSeq
+	home, _ := os.UserHomeDir()
+	tab := &SessionTab{
+		id:         tabID,
+		kind:       tabKindLocal,
+		title:      "本地终端",
+		status:     "connected",
+		statusText: "本地终端",
+	}
+
+	term, err := terminal.New(terminal.Options{
+		Dir:              home,
+		ShellIntegration: true,
+		Scrollback:       a.scrollbackBytes,
+		ImageLimit:       -1,
+		NoBlink:          true,
+		NoExitMessage:    true,
+		Font:             terminal.Font{Size: 14},
+		Theme:            terminal.DarkTheme(),
+		OnExit: func(code int) {
+			if tab.localClosed.Load() {
+				return
+			}
+			a.runUI(func() {
+				a.localTerminalExited(tabID, code)
+			})
+		},
+	})
+	if err != nil {
+		a.pushToast("本地终端初始化失败", err.Error(), "error")
+		return
+	}
+
+	tab.term = term
+	a.tabs = append(a.tabs, tab)
+	a.activeTab = len(a.tabs) - 1
+}
+
+// localTerminalExited updates a surviving local tab after its shell exits. It
+// ignores callbacks that race with tab close or vault teardown.
+func (a *App) localTerminalExited(tabID, code int) {
+	tab := a.findTabByID(tabID)
+	if tab == nil || tab.closing || tab.kind != tabKindLocal {
+		return
+	}
+	tab.status = "idle"
+	switch {
+	case code < 0:
+		tab.statusText = "本地终端启动失败"
+	case code == 0:
+		tab.statusText = "本地会话已结束"
+	default:
+		tab.statusText = fmt.Sprintf("本地会话已结束 (退出码 %d)", code)
+	}
+	debug.FreeOSMemory()
+}
+
 func (a *App) reconnectTab(tab *SessionTab) {
-	if tab == nil || tab.closing {
+	if tab == nil || tab.closing || tab.kind != tabKindSSH {
 		return
 	}
 	a.touchActivity()
@@ -452,6 +565,9 @@ func (a *App) closeTabByID(id int) {
 	}
 	tab := a.tabs[idx]
 	tab.closing = true
+	if tab.kind == tabKindLocal {
+		tab.localClosed.Store(true)
+	}
 	if tab.dialCancel != nil {
 		tab.dialCancel()
 		tab.dialCancel = nil
@@ -478,7 +594,7 @@ func (a *App) closeTabByID(id int) {
 func (a *App) closeTabsForHost(hostID int64) {
 	var ids []int
 	for _, t := range a.tabs {
-		if t.host.ID == hostID {
+		if t.kind == tabKindSSH && t.host.ID == hostID {
 			ids = append(ids, t.id)
 		}
 	}
@@ -493,6 +609,9 @@ func (a *App) closeAllTabs() {
 	a.activeTab = 0
 	for _, tab := range tabs {
 		tab.closing = true
+		if tab.kind == tabKindLocal {
+			tab.localClosed.Store(true)
+		}
 		if tab.dialCancel != nil {
 			tab.dialCancel()
 			tab.dialCancel = nil

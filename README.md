@@ -53,7 +53,7 @@
     </td>
     <td width="50%" valign="top">
       <h3>⚡ 纯 Go 原生桌面 + Ghostty 终端</h3>
-      <p>使用 <code>MyGo</code> + <code>libghostty-vt</code> 原生渲染界面与终端，零 WebView、零本地监听端口。支持多标签并发会话（同主机可开多个会话）、实时主机检索、原生私钥文件选择器、内联重连与零 CGO 纯 Go 跨平台构建（<code>purego</code> + 纯 Go SQLite）。</p>
+      <p>使用 <code>MyGo</code> + <code>libghostty-vt</code> 原生渲染界面与终端，零 WebView、零本地监听端口。支持多标签并发 SSH 会话、本地登录 Shell（同主机可开多个会话）、实时主机检索、原生私钥文件选择器、内联重连与零 CGO 纯 Go 跨平台构建（<code>purego</code> + 纯 Go SQLite）。</p>
     </td>
   </tr>
   <tr>
@@ -168,6 +168,10 @@ cd ssh-guard
 # 启动 MyGo 原生桌面版开发模式
 go tool mygo dev
 ```
+
+#### 本地终端
+
+解锁保险库后，点击侧边栏顶部的 **「>_ 终端」**，或点击空白工作区中的 **「>_ 打开本地终端」**，即可在同一个 Ghostty 标签面板中打开本机登录 Shell。本地终端不写 `.cast` 录像、不产生 SSH 审计、不参与 TOFU 与高危命令守卫；锁定保险库或退出应用时会自动关闭。
 
 ---
 

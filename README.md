@@ -6,7 +6,7 @@
 
 **基于 Go 构建的轻量级零信任 SSH 原生桌面客户端**
 
-纯 Go 原生桌面端（MyGo + Ghostty，零 WebView、零 CGO、100% 离线）
+纯 Go 原生桌面端（MyGo + Ghostty · 100% 本地离线）
 
 <p>
   <a href="https://github.com/pandasir/ssh-guard/releases">
@@ -17,7 +17,7 @@
   </a>
   <img src="https://img.shields.io/badge/Go-1.27+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.27+" />
   <img src="https://img.shields.io/badge/Desktop-MyGo%20%2B%20Ghostty-3fb950?style=flat-square" alt="MyGo + Ghostty" />
-  <img src="https://img.shields.io/badge/CGO%20%2F%20WebView-Zero-6e7681?style=flat-square" alt="Zero CGO & Zero WebView" />
+  <img src="https://img.shields.io/badge/Mode-100%25%20Offline-6e7681?style=flat-square" alt="100% Offline" />
   <a href="LICENSE">
     <img src="https://img.shields.io/github/license/pandasir/ssh-guard?style=flat-square&color=d29922" alt="MIT License" />
   </a>
@@ -39,7 +39,7 @@
 
 **SSH-Guard** 是一款面向个人开发者与运维工程师的**零信任、全离线**原生 SSH 桌面客户端。它以**凭据最小暴露面**为核心原则：主密码永不落盘，主机密钥仅在 SSH 握手瞬间于内存中解密并立即清零，同时内置主机指纹防中间人（TOFU / MITM）校验、高危命令实时阻断与标准 `asciinema v2` 会话录像回放。
 
-应用基于 [`MyGo`](https://github.com/egoist/mygo) 与 `libghostty-vt` 纯 Go 零 CGO 构建，**彻底移除 Electron / Wails / WebView**，不在本机监听任何 HTTP 或 WebSocket 端口，兼顾原生渲染体验与极低内存常驻。
+应用基于纯 Go 语言、[`MyGo`](https://github.com/egoist/mygo) 原生桌面框架、Ghostty 终端引擎（`libghostty-vt`）与纯 Go SQLite 构建，会话在进程内直接连通目标服务器，不监听本机网络端口，兼顾原生渲染体验与低内存常驻。
 
 ---
 
@@ -53,13 +53,13 @@
     </td>
     <td width="50%" valign="top">
       <h3>⚡ 纯 Go 原生桌面 + Ghostty 终端</h3>
-      <p>使用 <code>MyGo</code> + <code>libghostty-vt</code> 原生渲染界面与终端，零 WebView、零本地监听端口。支持多标签并发 SSH 会话、本地登录 Shell（同主机可开多个会话）、实时主机检索、原生私钥文件选择器、内联重连与零 CGO 纯 Go 跨平台构建（<code>purego</code> + 纯 Go SQLite）。</p>
+      <p>使用 <code>MyGo</code> + <code>libghostty-vt</code> 原生渲染界面与终端，进程内直连不暴露本地端口。支持多标签并发 SSH 会话、本地登录 Shell（同主机可开多个会话）、实时主机检索、原生私钥文件选择器、内联重连以及基于纯 Go SQLite 的跨平台构建。</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <h3>🪶 极致低内存与空闲回收</h3>
-      <p>macOS 采用 Metal GPU 渲染并在聚焦静止 2 秒后自动回收显存；Windows 默认启用多核 CPU 光栅化 + Win32 GDI（<code>MYGO_GPU=0</code>），规避 25–35 MB D3D11/DXGI 驱动开销（支持 <code>MYGO_GPU=1</code> 随时切回）。默认静止光标、<code>libghostty-vt</code> 懒加载、<code>GOGC=25</code> 与稳态 <code>GOMEMLIMIT=28 MiB</code>。</p>
+      <p>macOS 默认启用 GPU 渲染；Windows 默认启用 CPU 软件渲染（<code>MYGO_GPU=0</code>）以降低驱动常驻内存，也可通过 <code>MYGO_GPU=1</code> 切回 GPU 渲染。配合默认静止光标、<code>libghostty-vt</code> 懒加载、每标签 256 KiB 滚动缓冲上限、<code>GOGC=25</code> 与稳态 <code>GOMEMLIMIT=28 MiB</code> 控制内存占用。</p>
     </td>
     <td width="50%" valign="top">
       <h3>🛡️ TOFU 绑定与防 MITM 阻断</h3>
@@ -109,7 +109,7 @@ flowchart TB
     SQLite[("SQLite WAL (0600) · Hosts / KnownHosts / Audit")] -->|"密文信封"| DEK
 
     subgraph DesktopUI["原生桌面交互层 (internal/desktopui)"]
-        Desktop["MyGo 原生 UI + libghostty-vt (零 WebView · 零本地端口)"]
+        Desktop["MyGo 原生 UI + libghostty-vt (纯原生进程内直连)"]
     end
 
     subgraph SSHCore["SSH 会话核心 (internal/sshproxy)"]
@@ -139,7 +139,7 @@ flowchart TB
 | 平台与形态 | 发布文件名 | 说明 |
 | :--- | :--- | :--- |
 | **macOS 13+ (Apple Silicon)** | `SSH-Guard-macOS-arm64.dmg` | 原生桌面版安装镜像（内置签名 `libghostty-vt.dylib`） |
-| **Windows 10/11 安装版 (x64)** | `SSH-Guard-Windows-amd64-installer.exe` | NSIS 安装向导，含快捷方式与卸载程序，**无需 WebView2** |
+| **Windows 10/11 安装版 (x64)** | `SSH-Guard-Windows-amd64-installer.exe` | NSIS 安装向导，含快捷方式与卸载程序（内置 `ghostty-vt.dll`） |
 | **Windows 10/11 绿色版 (x64)** | `SSH-Guard-Windows-amd64-portable.exe` | 100% 离线免安装单文件，首次连接按需校验并释放 `ghostty-vt.dll` |
 
 > [!TIP]
@@ -154,10 +154,10 @@ flowchart TB
 
 #### 环境要求
 
-- **Go 1.27+**（`mygo` CLI 已通过 `go.mod` `tool` 指令锁定，**无需安装 Wails、Node.js 或 C 编译器**）
+- **Go 1.27+**（`mygo` CLI 已通过 `go.mod` 的 `tool` 指令锁定，直接通过 `go tool mygo` 调用）
 - 运行目标系统：
   - **macOS**：macOS 13.0+（Apple Silicon）
-  - **Windows**：Windows 10 (1809+) / Windows 11（x64），无需 WebView2 Runtime
+  - **Windows**：Windows 10 (1809+) / Windows 11（x64）
 
 #### 克隆并启动开发模式
 
@@ -230,8 +230,8 @@ make build-desktop-win-nsis
 仓库内置 [`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)。推送 `v*` 标签后将自动在 Go 1.27 环境下并行构建 macOS 与 Windows 桌面端产物、生成 `SHA256SUMS.txt` 并创建 GitHub Release：
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 也可在 GitHub **Actions** 页面通过 `workflow_dispatch` 手动触发构建并下载 Artifacts。
@@ -245,13 +245,13 @@ git push origin v0.4.0
 | 变量名 | 适用范围 | 默认行为与说明 |
 | :--- | :--- | :--- |
 | `SSH_GUARD_DATA_DIR` | 全平台 | 自定义数据库与录像目录（覆盖默认配置目录） |
-| `MYGO_GPU` | Windows | 未设置时默认启用 `MYGO_GPU=0`（多核 CPU 光栅化 + Win32 GDI，低内存）；设为 `1` 可切回 D3D11 GPU 硬件渲染 |
+| `MYGO_GPU` | Windows | 未设置时默认启用 `MYGO_GPU=0`（CPU 软件渲染，低内存）；设为 `1` 可切回 GPU 硬件渲染 |
 | `MYGO_GHOSTTY_VT` | 全平台 / 绿色版 | 手动指定自定义 `libghostty-vt` / `ghostty-vt.dll` 动态库路径 |
 | `GOGC` | 全平台 | 默认 `25`；显式设置后优先生效 |
 | `GOMEMLIMIT` | 全平台 | 稳态默认 `28 MiB`（Argon2id 解锁瞬间临时抬升至 `96 MiB` 并立即归还 OS） |
 
 > [!NOTE]
-> **Windows 切回 GPU 渲染示例（PowerShell）**：在高分辨率屏幕上若偏好 Direct3D 11 硬件加速，可通过环境变量显式开启：
+> **Windows 切回 GPU 渲染示例（PowerShell）**：在高分辨率屏幕上若偏好 GPU 硬件渲染，可通过环境变量显式开启：
 > ```powershell
 > $env:MYGO_GPU = "1"
 > .\SSH-Guard.exe
@@ -263,7 +263,7 @@ git push origin v0.4.0
   - macOS：`~/Library/Application Support/SSH-Guard`
   - Windows：`%AppData%\SSH-Guard`
   - 可在侧边栏底部点击 **「数据目录」** 一键定位；数据库与 `.cast` 文件均默认设置 `0600` 仅属主可读权限。
-- **Windows 绿色版运行库缓存**：`SSH-Guard-Windows-amd64-portable.exe` 在首次建立 SSH 连接或回放录像时，才会将内置 `ghostty-vt.dll` 经流式 SHA-256 校验并原子释放至 `%LocalAppData%\SSH-Guard\natives\ghostty-vt-<sha256前12位>.dll`，锁屏与主机管理界面零运行库开销。
+- **Windows 绿色版运行库缓存**：`SSH-Guard-Windows-amd64-portable.exe` 在首次建立 SSH 连接、打开本地终端或回放录像时，才会将内置 `ghostty-vt.dll` 经流式 SHA-256 校验并原子释放至 `%LocalAppData%\SSH-Guard\natives\ghostty-vt-<sha256前12位>.dll`，锁屏与主机管理界面零运行库开销。
 
 ---
 
@@ -271,7 +271,7 @@ git push origin v0.4.0
 
 ```text
 ssh-guard/
-├── main.go                          # MyGo 原生桌面端入口（低内存运行时策略、零 WebView）
+├── main.go                          # MyGo 原生桌面端入口与低内存运行时配置
 ├── mygo.json                        # MyGo 跨平台应用元数据与打包配置（macOS 13+ / Windows NSIS）
 ├── Makefile                         # 测试、静态检查与桌面端构建快捷命令
 ├── resources/icon.png               # 跨平台应用图标

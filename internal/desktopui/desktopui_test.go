@@ -24,6 +24,7 @@ import (
 	"ssh-guard/internal/sshproxy"
 	"ssh-guard/internal/store"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"golang.org/x/crypto/ssh"
@@ -1319,4 +1320,384 @@ func waitCond(t *testing.T, timeout time.Duration, fn func() bool, desc string) 
 		time.Sleep(15 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", desc)
+}
+
+func TestTerminalMenuActions(t *testing.T) {
+	app, err := NewApp(Options{DataDir: t.TempDir(), SkipLoadVT: true})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	if got := app.terminalFontSize(); got != DefaultTerminalFontSize {
+		t.Fatalf("expected default font size %v, got %v", DefaultTerminalFontSize, got)
+	}
+
+	// Locked state: zoom, reset, clear, reconnect, close must be safe no-ops.
+	app.zoomTerminalFont(2)
+	app.resetTerminalFont()
+	app.clearActiveTerminalScreen()
+	app.clearActiveTerminalScrollback()
+	app.reconnectOrRestartActiveTab()
+	app.closeActiveTab()
+	if got := app.terminalFontSize(); got != DefaultTerminalFontSize {
+		t.Fatalf("expected locked zoom to be a no-op, got %v", got)
+	}
+
+	// Unlock vault.
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	if !app.unlocked {
+		t.Fatal("expected vault to unlock")
+	}
+
+	// Unlocked without tabs: clear/reconnect/close must remain safe no-ops.
+	app.clearActiveTerminalScreen()
+	app.clearActiveTerminalScrollback()
+	app.reconnectOrRestartActiveTab()
+	app.closeActiveTab()
+
+	// Font zoom bounds and reset.
+	app.zoomTerminalFont(1)
+	if got := app.terminalFontSize(); got != DefaultTerminalFontSize+1 {
+		t.Fatalf("expected font size %v after +1, got %v", DefaultTerminalFontSize+1, got)
+	}
+	app.zoomTerminalFont(100)
+	if got := app.terminalFontSize(); got != MaxTerminalFontSize {
+		t.Fatalf("expected font size clamped at %v, got %v", MaxTerminalFontSize, got)
+	}
+	app.zoomTerminalFont(-100)
+	if got := app.terminalFontSize(); got != MinTerminalFontSize {
+		t.Fatalf("expected font size clamped at %v, got %v", MinTerminalFontSize, got)
+	}
+	app.resetTerminalFont()
+	if got := app.terminalFontSize(); got != DefaultTerminalFontSize {
+		t.Fatalf("expected font size reset to %v, got %v", DefaultTerminalFontSize, got)
+	}
+
+	// With a live terminal instance, clear screen, clear scrollback, zoom, and close work cleanly.
+	if err := terminal.Load(); err == nil {
+		term, err := terminal.New(terminal.Options{
+			Conn:          newBlockedReplayConn(),
+			Scrollback:    DefaultScrollbackBytes,
+			ImageLimit:    -1,
+			NoBlink:       true,
+			NoExitMessage: true,
+			Font:          terminal.Font{Size: app.terminalFontSize()},
+			Theme:         terminal.DarkTheme(),
+		})
+		if err != nil {
+			t.Fatalf("terminal.New: %v", err)
+		}
+		term.Feed([]byte("hello ssh-guard\r\nsecond line\r\n"))
+		app.tabs = append(app.tabs, &SessionTab{
+			id:     1,
+			kind:   tabKindLocal,
+			title:  "本地终端 #1",
+			term:   term,
+			status: "connected",
+		})
+		app.activeTab = 0
+
+		app.zoomTerminalFont(2)
+		if got := app.terminalFontSize(); got != DefaultTerminalFontSize+2 {
+			t.Fatalf("expected font size %v with active tab, got %v", DefaultTerminalFontSize+2, got)
+		}
+		app.clearActiveTerminalScreen()
+		app.clearActiveTerminalScrollback()
+		app.closeActiveTab()
+		if len(app.tabs) != 0 {
+			t.Fatalf("expected closeActiveTab to remove active tab, got %d remaining", len(app.tabs))
+		}
+	}
+}
+
+func TestSidebarToggle(t *testing.T) {
+	app, err := NewApp(Options{DataDir: t.TempDir(), SkipLoadVT: true})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	// Locked toggle must be ignored.
+	app.toggleSidebar()
+	if app.sidebarHidden {
+		t.Fatal("expected toggleSidebar to be a no-op while vault is locked")
+	}
+
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+
+	tt := ui.NewTester(app.View, 1280, 820)
+	if !tt.HasText("+ 主机") {
+		t.Fatalf("expected sidebar to be visible by default, got %q", tt.Texts())
+	}
+
+	app.toggleSidebar()
+	tt.Frame()
+	if !app.sidebarHidden {
+		t.Fatal("expected sidebarHidden=true after first toggle")
+	}
+	if tt.HasText("+ 主机") {
+		t.Fatalf("expected sidebar controls hidden when collapsed, got %q", tt.Texts())
+	}
+
+	app.toggleSidebar()
+	tt.Frame()
+	if app.sidebarHidden {
+		t.Fatal("expected sidebarHidden=false after second toggle")
+	}
+	if !tt.HasText("+ 主机") {
+		t.Fatalf("expected sidebar controls restored after second toggle, got %q", tt.Texts())
+	}
+}
+
+func TestAboutModal(t *testing.T) {
+	dataDir := t.TempDir()
+	app, err := NewApp(Options{DataDir: dataDir, SkipLoadVT: true})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	// 1. Works while locked.
+	tt := ui.NewTester(app.View, 1280, 820)
+	if tt.HasText("关于 SSH-Guard") {
+		t.Fatal("about modal should start closed")
+	}
+	app.openAboutModal()
+	tt.Frame()
+	if !tt.HasText("关于 SSH-Guard") || !tt.HasText("v"+appDisplayVersion()) || !tt.HasText(dataDir) || !tt.HasText(app.platform) {
+		t.Fatalf("expected about modal metadata while locked, got %q", tt.Texts())
+	}
+	if err := tt.Click("关闭"); err != nil {
+		t.Fatalf("click 关闭 (locked): %v", err)
+	}
+	tt.Frame()
+	if app.aboutOpen || tt.HasText("关于 SSH-Guard") {
+		t.Fatalf("expected about modal dismissed after clicking 关闭, open=%v", app.aboutOpen)
+	}
+
+	// 2. Works while unlocked.
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	app.openAboutModal()
+	tt.Frame()
+	if !tt.HasText("关于 SSH-Guard") || !tt.HasText(renderBackendLabel()) {
+		t.Fatalf("expected about modal metadata while unlocked, got %q", tt.Texts())
+	}
+	if err := tt.Click("关闭"); err != nil {
+		t.Fatalf("click 关闭 (unlocked): %v", err)
+	}
+	tt.Frame()
+	if app.aboutOpen {
+		t.Fatal("expected about modal dismissed while unlocked")
+	}
+}
+
+func collectMenuAccelerators(items []*mygo.MenuItem, out map[string]string) {
+	for _, it := range items {
+		if it.Accelerator != "" {
+			key := it.ID
+			if key == "" {
+				key = it.Label
+			}
+			out[key] = it.Accelerator
+		}
+		if len(it.Submenu) > 0 {
+			collectMenuAccelerators(it.Submenu, out)
+		}
+	}
+}
+
+func TestBuildAppMenu(t *testing.T) {
+	app, err := NewApp(Options{DataDir: t.TempDir(), SkipLoadVT: true})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	// 1. macOS menu layout
+	macMenu := app.buildAppMenu("darwin")
+	macTop := macMenu.Items()
+	wantMacTop := []string{"SSH-Guard", "会话", "编辑", "终端", "视图", "安全", "窗口", "帮助"}
+	if len(macTop) != len(wantMacTop) {
+		t.Fatalf("expected %d macOS top menus, got %d", len(wantMacTop), len(macTop))
+	}
+	for i, want := range wantMacTop {
+		if macTop[i].Label != want {
+			t.Fatalf("macOS top menu[%d]: expected %q, got %q", i, want, macTop[i].Label)
+		}
+	}
+	if macMenu.ItemByID(menuIDAppAbout) == nil || macMenu.ItemByID(menuIDHelpAbout) == nil {
+		t.Fatal("expected About items on macOS menu")
+	}
+	if macMenu.ItemByID(menuIDSessionQuit) != nil {
+		t.Fatal("expected Quit under macOS app menu, not Session menu")
+	}
+	if got := macMenu.ItemByID(menuIDNewLocal).Accelerator; got != "Cmd+T" {
+		t.Fatalf("expected macOS new local accelerator Cmd+T, got %q", got)
+	}
+
+	// 2. Windows menu layout & conflict-free accelerators
+	winMenu := app.buildAppMenu("windows")
+	winTop := winMenu.Items()
+	wantWinTop := []string{"会话", "编辑", "终端", "视图", "安全", "帮助"}
+	if len(winTop) != len(wantWinTop) {
+		t.Fatalf("expected %d Windows top menus, got %d", len(wantWinTop), len(winTop))
+	}
+	for i, want := range wantWinTop {
+		if winTop[i].Label != want {
+			t.Fatalf("Windows top menu[%d]: expected %q, got %q", i, want, winTop[i].Label)
+		}
+	}
+	if winMenu.ItemByID(menuIDSessionQuit) == nil || winMenu.ItemByID(menuIDSessionQuit).Role != mygo.RoleQuit {
+		t.Fatal("expected RoleQuit under Session menu on Windows")
+	}
+	if winMenu.ItemByID(menuIDAppAbout) != nil {
+		t.Fatal("did not expect macOS app menu About item on Windows")
+	}
+
+	winAccels := map[string]string{}
+	collectMenuAccelerators(winTop, winAccels)
+	forbidden := map[string]bool{
+		"ctrl+c": true,
+		"ctrl+w": true,
+		"ctrl+r": true,
+		"ctrl+k": true,
+		"ctrl+b": true,
+		"ctrl+t": true,
+		"ctrl+n": true,
+		"ctrl+l": true,
+	}
+	for id, accel := range winAccels {
+		if forbidden[strings.ToLower(strings.TrimSpace(accel))] {
+			t.Fatalf("Windows custom menu item %q binds forbidden bare terminal control key %q", id, accel)
+		}
+	}
+	if got := winMenu.ItemByID(menuIDNewLocal).Accelerator; got != "Ctrl+Shift+T" {
+		t.Fatalf("expected Windows new local accelerator Ctrl+Shift+T, got %q", got)
+	}
+	if got := winMenu.ItemByID(menuIDZoomIn).Accelerator; got != "Ctrl+=" {
+		t.Fatalf("expected Windows zoom in accelerator Ctrl+=, got %q", got)
+	}
+}
+
+func TestAppMenuStateSync(t *testing.T) {
+	app, err := NewApp(Options{DataDir: t.TempDir(), SkipLoadVT: true})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	defer app.Shutdown()
+
+	app.appMenu = app.buildAppMenu("windows")
+	if !app.syncAppMenu() {
+		t.Fatal("expected initial syncAppMenu to apply state")
+	}
+	if app.syncAppMenu() {
+		t.Fatal("expected repeated syncAppMenu with unchanged state to be a no-op")
+	}
+
+	assertEnabled := func(stage string, id string, want bool) {
+		t.Helper()
+		it := app.appMenu.ItemByID(id)
+		if it == nil {
+			t.Fatalf("%s: missing menu item %q", stage, id)
+		}
+		if got := it.IsEnabled(); got != want {
+			t.Fatalf("%s: item %q enabled=%v, want %v", stage, id, got, want)
+		}
+	}
+
+	// 1. Locked state: privileged items disabled, About stays enabled.
+	for _, id := range []string{
+		menuIDNewLocal, menuIDNewHost, menuIDReconnect, menuIDCloseTab, menuIDCloseAllTabs,
+		menuIDOpenDataDir, menuIDClearScreen, menuIDClearScrollback,
+		menuIDZoomIn, menuIDZoomOut, menuIDZoomReset, menuIDToggleSidebar,
+		menuIDLockVault, menuIDRecordings, menuIDAuditLogs,
+	} {
+		assertEnabled("locked", id, false)
+	}
+	assertEnabled("locked", menuIDHelpAbout, true)
+
+	// 2. Unlocked with no tabs: session/host/security/zoom-in/out/sidebar enabled; tab-scoped & reset disabled.
+	app.unlockPass = "MasterPass!2026"
+	app.unlockConfirm = "MasterPass!2026"
+	app.submitUnlock()
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after unlock")
+	}
+	for _, id := range []string{
+		menuIDNewLocal, menuIDNewHost, menuIDOpenDataDir,
+		menuIDZoomIn, menuIDZoomOut, menuIDToggleSidebar,
+		menuIDLockVault, menuIDRecordings, menuIDAuditLogs,
+	} {
+		assertEnabled("unlocked-empty", id, true)
+	}
+	for _, id := range []string{
+		menuIDReconnect, menuIDCloseTab, menuIDCloseAllTabs,
+		menuIDClearScreen, menuIDClearScrollback, menuIDZoomReset,
+	} {
+		assertEnabled("unlocked-empty", id, false)
+	}
+	if !app.appMenu.ItemByID(menuIDToggleSidebar).IsChecked() {
+		t.Fatal("expected sidebar menu item checked by default")
+	}
+
+	// 3. Connected tab: tab close & clear enabled, reconnect still disabled.
+	app.tabs = append(app.tabs, &SessionTab{id: 1, kind: tabKindSSH, status: "connected"})
+	app.activeTab = 0
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after adding connected tab")
+	}
+	assertEnabled("connected-tab", menuIDCloseTab, true)
+	assertEnabled("connected-tab", menuIDCloseAllTabs, true)
+	assertEnabled("connected-tab", menuIDClearScreen, true)
+	assertEnabled("connected-tab", menuIDClearScrollback, true)
+	assertEnabled("connected-tab", menuIDReconnect, false)
+
+	// 4. Disconnected / error tab: reconnect enabled.
+	app.tabs[0].status = "error"
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after tab enters error state")
+	}
+	assertEnabled("error-tab", menuIDReconnect, true)
+
+	// 5. Font zoom bounds & sidebar toggle.
+	app.zoomTerminalFont(100)
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after zooming to max font size")
+	}
+	assertEnabled("max-font", menuIDZoomIn, false)
+	assertEnabled("max-font", menuIDZoomOut, true)
+	assertEnabled("max-font", menuIDZoomReset, true)
+
+	app.zoomTerminalFont(-100)
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after zooming to min font size")
+	}
+	assertEnabled("min-font", menuIDZoomIn, true)
+	assertEnabled("min-font", menuIDZoomOut, false)
+	assertEnabled("min-font", menuIDZoomReset, true)
+
+	app.toggleSidebar()
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after hiding sidebar")
+	}
+	if app.appMenu.ItemByID(menuIDToggleSidebar).IsChecked() {
+		t.Fatal("expected sidebar menu item unchecked when sidebar is hidden")
+	}
+
+	// 6. Lock vault disables privileged actions again.
+	app.LockVault("test")
+	if !app.syncAppMenu() {
+		t.Fatal("expected syncAppMenu to update after LockVault")
+	}
+	assertEnabled("relocked", menuIDNewLocal, false)
+	assertEnabled("relocked", menuIDCloseTab, false)
+	assertEnabled("relocked", menuIDLockVault, false)
+	assertEnabled("relocked", menuIDHelpAbout, true)
 }

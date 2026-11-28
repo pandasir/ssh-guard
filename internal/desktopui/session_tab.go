@@ -331,7 +331,7 @@ func (a *App) connectHost(hostID int64) {
 		ImageLimit:    -1,
 		NoBlink:       true,
 		NoExitMessage: true,
-		Font:          terminal.Font{Size: 14},
+		Font:          terminal.Font{Size: a.terminalFontSize()},
 		Theme:         terminal.DarkTheme(),
 	})
 	if err != nil {
@@ -364,7 +364,7 @@ func (a *App) newLocalTerminalInstance(tabID int, gen uint64, closed *atomic.Boo
 		ImageLimit:       -1,
 		NoBlink:          true,
 		NoExitMessage:    true,
-		Font:             terminal.Font{Size: 14},
+		Font:             terminal.Font{Size: a.terminalFontSize()},
 		Theme:            terminal.DarkTheme(),
 		OnTitle: func(title string) {
 			if closed.Load() {
@@ -736,4 +736,103 @@ func (a *App) closeAllTabs() {
 			tab.term = nil
 		}
 	}
+}
+
+func (a *App) terminalFontSize() float32 {
+	if a.termFontSize <= 0 {
+		return DefaultTerminalFontSize
+	}
+	return a.termFontSize
+}
+
+func (a *App) applyTerminalFontSize() {
+	size := a.terminalFontSize()
+	for _, tab := range a.tabs {
+		if tab != nil && tab.term != nil {
+			tab.term.SetFont(terminal.Font{Size: size})
+		}
+	}
+}
+
+func (a *App) zoomTerminalFont(delta float32) {
+	if !a.unlocked || delta == 0 {
+		return
+	}
+	cur := a.terminalFontSize()
+	next := cur + delta
+	if next < MinTerminalFontSize {
+		next = MinTerminalFontSize
+	}
+	if next > MaxTerminalFontSize {
+		next = MaxTerminalFontSize
+	}
+	if next == cur {
+		return
+	}
+	a.touchActivity()
+	a.termFontSize = next
+	a.applyTerminalFontSize()
+}
+
+func (a *App) resetTerminalFont() {
+	if !a.unlocked {
+		return
+	}
+	if a.terminalFontSize() == DefaultTerminalFontSize {
+		return
+	}
+	a.touchActivity()
+	a.termFontSize = DefaultTerminalFontSize
+	a.applyTerminalFontSize()
+}
+
+func (a *App) clearActiveTerminalScreen() {
+	if !a.unlocked {
+		return
+	}
+	active := a.activeSessionTab()
+	if active == nil || active.term == nil {
+		return
+	}
+	a.touchActivity()
+	active.term.ClearScreen()
+}
+
+func (a *App) clearActiveTerminalScrollback() {
+	if !a.unlocked {
+		return
+	}
+	active := a.activeSessionTab()
+	if active == nil || active.term == nil {
+		return
+	}
+	a.touchActivity()
+	active.term.ClearScrollback()
+}
+
+func (a *App) reconnectOrRestartActiveTab() {
+	if !a.unlocked {
+		return
+	}
+	active := a.activeSessionTab()
+	if active == nil || active.closing || (active.status != "idle" && active.status != "error") {
+		return
+	}
+	if active.kind == tabKindLocal {
+		a.restartLocalTerminal(active)
+		return
+	}
+	a.reconnectTab(active)
+}
+
+func (a *App) closeActiveTab() {
+	if !a.unlocked {
+		return
+	}
+	active := a.activeSessionTab()
+	if active == nil {
+		return
+	}
+	a.touchActivity()
+	a.closeTabByID(active.id)
 }

@@ -28,6 +28,11 @@ const (
 
 	// MaxPrivateKeyFileBytes enforces the same 64 KB cap as the previous desktop picker.
 	MaxPrivateKeyFileBytes = 64 * 1024
+
+	// Terminal font size defaults and bounds for menu zoom actions.
+	DefaultTerminalFontSize float32 = 14
+	MinTerminalFontSize     float32 = 10
+	MaxTerminalFontSize     float32 = 28
 )
 
 // Options configures a native SSH-Guard desktop application instance.
@@ -62,10 +67,13 @@ type App struct {
 	termLoadMu     sync.Mutex
 	termLoaded     bool
 
-	win          *mygo.Window
-	theme        *ui.Theme
-	uiMu         sync.Mutex // synchronizes headless ui.NewTester frames with background goroutines when win == nil
-	shutdownOnce sync.Once
+	win            *mygo.Window
+	appMenu        *mygo.Menu
+	lastMenuState  menuState
+	menuStateReady bool
+	theme          *ui.Theme
+	uiMu           sync.Mutex // synchronizes headless ui.NewTester frames with background goroutines when win == nil
+	shutdownOnce   sync.Once
 
 	// Vault / Unlock UI state
 	initialized   bool
@@ -85,10 +93,13 @@ type App struct {
 	deleteTarget *store.Host
 
 	// Multi-tab Ghostty terminal workspace
-	tabs         []*SessionTab
-	activeTab    int
-	nextTabSeq   int
-	nextLocalSeq int
+	tabs          []*SessionTab
+	activeTab     int
+	nextTabSeq    int
+	nextLocalSeq  int
+	termFontSize  float32
+	sidebarHidden bool
+	aboutOpen     bool
 
 	// Queued TOFU / MITM verification modal
 	tofuPending *tofuItem
@@ -168,6 +179,7 @@ func NewApp(opts Options) (*App, error) {
 		skipLoadVT:      opts.SkipLoadVT,
 		theme:           newDesktopTheme(),
 		initialized:     initialized,
+		termFontSize:    DefaultTerminalFontSize,
 	}
 	if app.openDirFn == nil {
 		app.openDirFn = openPathInOS
@@ -209,7 +221,12 @@ func (a *App) ensureTerminalRuntime() error {
 
 // Run opens the native MyGo window and blocks until quit; libghostty-vt loads lazily on first terminal use.
 func (a *App) Run() error {
+	mygo.Theme.SetSource(mygo.ThemeDark)
 	mygo.App.WhenReady(func() {
+		a.appMenu = a.buildAppMenu(goruntime.GOOS)
+		a.syncAppMenu()
+		mygo.App.SetMenu(a.appMenu)
+
 		a.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:           "SSH-Guard · 原生零信任 SSH 桌面端",
 			Width:           1280,
@@ -348,6 +365,7 @@ func (a *App) View(c *ui.Context) {
 		a.uiMu.Lock()
 		defer a.uiMu.Unlock()
 	}
+	defer a.syncAppMenu()
 	if a.theme == nil {
 		a.theme = newDesktopTheme()
 	}
@@ -362,12 +380,15 @@ func (a *App) View(c *ui.Context) {
 
 	if !a.unlocked {
 		a.renderUnlockView(c)
+		a.renderAboutModal(c)
 		return
 	}
 
-	// Main workspace layout: fixed left sidebar + expanding terminal workspace.
+	// Main workspace layout: optional left sidebar + expanding terminal workspace.
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#0d1117")).Children(func() {
-		a.renderSidebar(c)
+		if !a.sidebarHidden {
+			a.renderSidebar(c)
+		}
 		a.renderWorkspace(c)
 	})
 
@@ -378,6 +399,15 @@ func (a *App) View(c *ui.Context) {
 	a.renderAuditModal(c)
 	a.renderRecordingsModal(c)
 	a.renderReplayModal(c)
+	a.renderAboutModal(c)
+}
+
+func (a *App) toggleSidebar() {
+	if !a.unlocked {
+		return
+	}
+	a.touchActivity()
+	a.sidebarHidden = !a.sidebarHidden
 }
 
 func (a *App) loadHosts() error {

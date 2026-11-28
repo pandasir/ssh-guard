@@ -2,7 +2,7 @@
   "name": "SSH-Guard",
   "slug": "ssh-guard",
   "identifier": "com.pandasir.sshguard",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "copyright": "MIT License",
   "publisher": "SSH-Guard",
   "license": "MIT",

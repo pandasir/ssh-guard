@@ -310,13 +310,12 @@ func (a *App) renderAuditModal(c *ui.Context) {
 	}
 
 	m := ui.DialogBase(c, &a.auditOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.72))
-		panel.Width(920).Height(560).Padding(18).Gap(12).Radius(10).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d"))
+		styleModalPanel(backdrop, panel, 920)
+		panel.Height(560)
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, fmt.Sprintf("安全审计日志 (%d 条)", len(a.auditLogs))).FontSize(16).Bold()
-			if ui.Button(c, "关闭").Padding(4, 10).Clicked() {
+			ui.Text(c, fmt.Sprintf("安全审计日志 (%d 条)", len(a.auditLogs))).FontSize(16).Bold().TextColor(colTextPrimary)
+			if subtleButton(c, "关闭", 5, 12).Clicked() {
 				a.auditOpen = false
 				a.auditLogs = nil
 				debug.FreeOSMemory()
@@ -325,7 +324,7 @@ func (a *App) renderAuditModal(c *ui.Context) {
 
 		if len(a.auditLogs) == 0 {
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "暂无审计日志").FontSize(13).TextColor(ui.Hex("#8b949e"))
+				ui.Text(c, "暂无审计日志").FontSize(13).TextColor(colTextMuted)
 			})
 		} else {
 			a.auditState.RowHeight = 30
@@ -335,11 +334,11 @@ func (a *App) renderAuditModal(c *ui.Context) {
 				case 0:
 					ui.Text(c, l.CreatedAt.Local().Format("2006-01-02 15:04:05")).FontSize(12).SingleLine()
 				case 1:
-					colColor := ui.Hex("#79c0ff")
+					colColor := colAccentText
 					if l.Severity == "WARN" {
-						colColor = ui.Hex("#d29922")
+						colColor = colWarn
 					} else if l.Severity == "CRITICAL" {
-						colColor = ui.Hex("#f85149")
+						colColor = colDanger
 					}
 					ui.Text(c, l.Severity).FontSize(12).Bold().TextColor(colColor).SingleLine()
 				case 2:
@@ -347,7 +346,7 @@ func (a *App) renderAuditModal(c *ui.Context) {
 				case 3:
 					ui.Text(c, l.HostName).FontSize(12).SingleLine()
 				case 4:
-					ui.Text(c, l.ClientIP).FontSize(12).TextColor(ui.Hex("#8b949e")).SingleLine()
+					ui.Text(c, l.ClientIP).FontSize(12).TextColor(colTextMuted).SingleLine()
 				case 5:
 					ui.Text(c, l.Detail).FontSize(12).SingleLine()
 				}
@@ -374,13 +373,12 @@ func (a *App) renderRecordingsModal(c *ui.Context) {
 	}
 
 	m := ui.DialogBase(c, &a.recordingsOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.72))
-		panel.Width(860).Height(520).Padding(18).Gap(12).Radius(10).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d"))
+		styleModalPanel(backdrop, panel, 860)
+		panel.Height(520)
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, fmt.Sprintf("终端会话录像 (asciinema .cast · %d 条)", len(a.recordings))).FontSize(16).Bold()
-			if ui.Button(c, "关闭").Padding(4, 10).Clicked() {
+			ui.Text(c, fmt.Sprintf("终端会话录像 (asciinema .cast · %d 条)", len(a.recordings))).FontSize(16).Bold().TextColor(colTextPrimary)
+			if subtleButton(c, "关闭", 5, 12).Clicked() {
 				a.recordingsOpen = false
 				a.recordings = nil
 				debug.FreeOSMemory()
@@ -389,7 +387,7 @@ func (a *App) renderRecordingsModal(c *ui.Context) {
 
 		if len(a.recordings) == 0 {
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "暂无会话录像").FontSize(13).TextColor(ui.Hex("#8b949e"))
+				ui.Text(c, "暂无会话录像").FontSize(13).TextColor(colTextMuted)
 			})
 		} else {
 			a.recState.RowHeight = 34
@@ -406,7 +404,7 @@ func (a *App) renderRecordingsModal(c *ui.Context) {
 					ui.Text(c, fmt.Sprintf("%.1f KB", float64(r.SizeBytes)/1024)).FontSize(12).SingleLine()
 				case 4:
 					rec := r
-					ui.PrimaryButton(c, "回放").Padding(3, 10).OnClick(func() {
+					glowPrimaryButton(c, "回放", 3, 10).OnClick(func() {
 						a.startReplay(rec)
 					})
 				}
@@ -428,14 +426,13 @@ func (a *App) renderReplayModal(c *ui.Context) {
 	paused, speedStr, progress, finished := rc.snapshot()
 
 	m := ui.DialogBase(c, &a.replayOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.72))
-		panel.Width(940).Height(600).Padding(18).Gap(10).Radius(10).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d"))
+		styleModalPanel(backdrop, panel, 940)
+		panel.Height(600)
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, fmt.Sprintf("会话回放 · %s (%s · %dx%d)", rc.hostName, rc.recID, rc.width, rc.height)).
-				FontSize(15).Bold().SingleLine()
-			if ui.Button(c, "关闭").Padding(4, 10).Clicked() {
+				FontSize(15).Bold().TextColor(colTextPrimary).SingleLine()
+			if subtleButton(c, "关闭", 5, 12).Clicked() {
 				a.stopReplay()
 			}
 		})
@@ -445,7 +442,7 @@ func (a *App) renderReplayModal(c *ui.Context) {
 			if paused {
 				toggleLabel = "继续"
 			}
-			if ui.PrimaryButton(c, toggleLabel).Disabled(finished).Padding(5, 12).Clicked() {
+			if glowPrimaryButton(c, toggleLabel, 5, 13).Disabled(finished).Clicked() {
 				rc.togglePaused()
 			}
 			curSpeed := speedStr
@@ -456,11 +453,11 @@ func (a *App) renderReplayModal(c *ui.Context) {
 			if finished {
 				progText += " · 已播完"
 			}
-			ui.Text(c, progText).FontSize(12).TextColor(ui.Hex("#8b949e"))
+			ui.Text(c, progText).FontSize(12).TextColor(colTextMuted)
 		})
 
-		ui.Box(c).Grow(1).FillWidth().Padding(6).Radius(6).
-			Background(ui.Hex("#0a0d12")).Border(1, ui.Hex("#30363d")).Children(func() {
+		ui.Box(c).Grow(1).FillWidth().Padding(6).Radius(8).
+			Background(colCanvasBg).Border(1, colBorder).Children(func() {
 			terminal.View(c.Key("replay-term"), rc.term).Fill()
 		})
 	})

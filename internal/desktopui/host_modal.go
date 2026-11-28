@@ -232,13 +232,12 @@ func (a *App) renderHostModal(c *ui.Context) {
 	}
 
 	m := ui.DialogBase(c, &a.hostOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.72))
-		panel.Width(540).MaxHeight(680).Padding(20).Gap(12).Radius(10).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d"))
+		styleModalPanel(backdrop, panel, 540)
+		panel.MaxHeight(680)
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, title).FontSize(16).Bold()
-			if ui.Button(c, "×").Padding(2, 8).Clicked() {
+			ui.Text(c, title).FontSize(16).Bold().TextColor(colTextPrimary)
+			if subtleButton(c, "×", 3, 9).Clicked() {
 				a.closeHostModal()
 			}
 		})
@@ -285,8 +284,8 @@ func (a *App) renderHostModal(c *ui.Context) {
 			} else {
 				ui.Column(c).Gap(6).Children(func() {
 					ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "SSH 私钥内容 (PEM / OpenSSH)"+secretHint).FontSize(12).TextColor(ui.Hex("#8b949e"))
-						if ui.Button(c, "从本机导入私钥文件...").Disabled(f.pickingKey).Padding(3, 8).Clicked() {
+						ui.Text(c, "SSH 私钥内容 (PEM / OpenSSH)"+secretHint).FontSize(12).TextColor(colTextMuted)
+						if subtleButton(c, "从本机导入私钥文件...", 4, 9).Disabled(f.pickingKey).Clicked() {
 							a.triggerPickPrivateKey()
 						}
 					})
@@ -307,18 +306,18 @@ func (a *App) renderHostModal(c *ui.Context) {
 		})
 
 		if f.errMsg != "" {
-			ui.Box(c).Padding(8, 10).Radius(6).
-				Background(ui.RGBA(248, 81, 73, 0.14)).Border(1, ui.RGBA(248, 81, 73, 0.4)).
+			ui.Box(c).Padding(8, 10).Radius(7).
+				Background(colDangerBg).Border(1, colDangerBorder).
 				Children(func() {
-					ui.Text(c, f.errMsg).FontSize(12).TextColor(ui.Hex("#ff7b72"))
+					ui.Text(c, f.errMsg).FontSize(12).TextColor(colDanger)
 				})
 		}
 
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			if ui.Button(c, "取消").Clicked() {
+			if subtleButton(c, "取消", 6, 14).Clicked() {
 				a.closeHostModal()
 			}
-			if ui.PrimaryButton(c, "加密并保存").Clicked() {
+			if glowPrimaryButton(c, "加密并保存", 6, 16).Clicked() {
 				a.saveHostForm()
 			}
 		})

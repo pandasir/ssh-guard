@@ -79,34 +79,56 @@ func (a *App) renderUnlockView(c *ui.Context) {
 		btnLabel = "创建保险库并进入"
 	}
 
-	ui.Column(c).Fill().Center().Background(ui.Hex("#0d1117")).Children(func() {
-		ui.Column(c).Width(420).Padding(28).Gap(14).Radius(12).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d")).
-			Shadow(0, 20, 50, 0, ui.RGBA(0, 0, 0, 0.45)).
+	ui.Column(c).Fill().Center().Background(colCanvasBg).
+		RadialGradient(ui.RadialGradient{
+			Center: ui.Point{X: 0.5, Y: 0.42},
+			Radius: 420,
+			Oklab:  true,
+			Stops: []ui.GradientStop{
+				{Color: ui.RGBA(26, 72, 164, 0.24), At: 0},
+				{Color: ui.RGBA(14, 34, 78, 0.10), At: 0.48},
+				{Color: colCanvasBg, At: 1},
+			},
+		}).Children(func() {
+		ui.Column(c).Width(430).Padding(28).Gap(15).Radius(14).
+			Background(colModalBg).Border(1, colBorderStrong).
+			Shadow(0, 24, 60, 0, ui.RGBA(0, 0, 0, 0.58)).
 			Children(func() {
 				// Brand row
 				ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Box(c).Size(30, 30).Radius(8).Center().
+							LinearGradient(ui.LinearGradient{
+								From:  ui.RGBA(77, 143, 248, 0.26),
+								To:    ui.RGBA(31, 91, 212, 0.34),
+								Angle: 145,
+							}).
+							Border(1, ui.RGBA(147, 197, 253, 0.32)).
+							Children(func() {
+								ui.Icon(c, iconShieldLockSVG).Size(16, 16).TextColor(colAccentText)
+							})
+						ui.Box(c).Padding(3, 9).Radius(999).
+							Background(ui.RGBA(59, 130, 246, 0.14)).Border(1, ui.RGBA(96, 165, 250, 0.34)).
+							Children(func() {
+								ui.Text(c, "SSH-GUARD").FontSize(11).Bold().LetterSpacing(0.4).TextColor(colAccentText)
+							})
+					})
 					ui.Box(c).Padding(3, 9).Radius(999).
-						Background(ui.RGBA(56, 139, 253, 0.14)).Border(1, ui.RGBA(56, 139, 253, 0.35)).
+						Background(colSuccessBg).Border(1, colSuccessBorder).
 						Children(func() {
-							ui.Text(c, "SSH-GUARD").FontSize(11).Bold().TextColor(ui.Hex("#79c0ff"))
-						})
-					ui.Box(c).Padding(3, 9).Radius(999).
-						Background(ui.RGBA(63, 185, 80, 0.12)).Border(1, ui.RGBA(63, 185, 80, 0.35)).
-						Children(func() {
-							ui.Text(c, "NATIVE · "+strings.ToUpper(a.platform)).FontSize(10).Bold().TextColor(ui.Hex("#3fb950"))
+							ui.Text(c, "NATIVE · "+strings.ToUpper(a.platform)).FontSize(10).Bold().TextColor(colSuccess)
 						})
 				})
 
-				ui.Text(c, title).FontSize(20).Bold().TextColor(ui.Hex("#e6edf3"))
+				ui.Text(c, title).FontSize(20).Bold().TextColor(colTextPrimary)
 				ui.Text(c, "主密码仅在内存中通过 Argon2id 派生 KEK，绝不写入磁盘。零 WebView 原生渲染，关闭应用或空闲超时后自动清零内存。").
-					FontSize(12).TextColor(ui.Hex("#8b949e"))
+					FontSize(12).LineHeight(1.55).TextColor(colTextMuted)
 
 				if a.unlockInfo != "" {
-					ui.Box(c).Padding(8, 10).Radius(6).
-						Background(ui.RGBA(210, 153, 34, 0.14)).Border(1, ui.RGBA(210, 153, 34, 0.4)).
+					ui.Box(c).Padding(8, 10).Radius(7).
+						Background(colWarnBg).Border(1, colWarnBorder).
 						Children(func() {
-							ui.Text(c, a.unlockInfo).FontSize(12).TextColor(ui.Hex("#e3b341"))
+							ui.Text(c, a.unlockInfo).FontSize(12).TextColor(colWarn)
 						})
 				}
 
@@ -134,14 +156,14 @@ func (a *App) renderUnlockView(c *ui.Context) {
 				})
 
 				if a.unlockErr != "" {
-					ui.Box(c).Padding(8, 10).Radius(6).
-						Background(ui.RGBA(248, 81, 73, 0.14)).Border(1, ui.RGBA(248, 81, 73, 0.4)).
+					ui.Box(c).Padding(8, 10).Radius(7).
+						Background(colDangerBg).Border(1, colDangerBorder).
 						Children(func() {
-							ui.Text(c, a.unlockErr).FontSize(12).TextColor(ui.Hex("#ff7b72"))
+							ui.Text(c, a.unlockErr).FontSize(12).TextColor(colDanger)
 						})
 				}
 
-				if ui.PrimaryButton(c, btnLabel).FillWidth().Clicked() {
+				if glowPrimaryButton(c, btnLabel, 9, 16).FillWidth().Clicked() {
 					a.submitUnlock()
 				}
 			})

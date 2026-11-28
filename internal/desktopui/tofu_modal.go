@@ -117,50 +117,46 @@ func (a *App) renderTofuModal(c *ui.Context) {
 	}
 
 	m := ui.DialogBase(c, &a.tofuOpen, func(backdrop, panel ui.Element) {
-		backdrop.Background(ui.RGBA(0, 0, 0, 0.72))
-		panel.Width(540).Padding(20).Gap(12).Radius(10).
-			Background(ui.Hex("#161b22")).Border(1, ui.Hex("#30363d"))
+		styleModalPanel(backdrop, panel, 540)
 
-		titleColor := ui.Hex("#e6edf3")
+		titleColor := colTextPrimary
 		if item.isMismatch {
-			titleColor = ui.Hex("#ff7b72")
+			titleColor = colDanger
 		}
 		ui.Text(c, title).FontSize(16).Bold().TextColor(titleColor)
-		ui.Text(c, item.message).FontSize(13).TextColor(ui.Hex("#e6edf3"))
+		ui.Text(c, item.message).FontSize(13).LineHeight(1.5).TextColor(colTextSecondary)
 
-		ui.Column(c).Padding(12).Gap(6).Radius(6).
-			Background(ui.Hex("#0d1117")).Border(1, ui.Hex("#30363d")).Children(func() {
-			ui.Text(c, "目标主机: "+item.host.Name+" ("+item.host.Address+")").FontSize(12).TextColor(ui.Hex("#8b949e"))
-			ui.Text(c, "密钥类型: "+item.keyType).FontSize(12)
+		ui.Column(c).Padding(12).Gap(6).Radius(8).
+			Background(colInputBg).Border(1, colBorder).Children(func() {
+			ui.Text(c, "目标主机: "+item.host.Name+" ("+item.host.Address+")").FontSize(12).TextColor(colTextMuted)
+			ui.Text(c, "密钥类型: "+item.keyType).FontSize(12).TextColor(colTextSecondary)
 			if item.isMismatch {
-				ui.Text(c, "历史已信任指纹: "+item.expectedFP).FontSize(12).TextColor(ui.Hex("#e3b341"))
+				ui.Text(c, "历史已信任指纹: "+item.expectedFP).FontSize(12).TextColor(colWarn)
 			}
-			ui.Text(c, "当前收到指纹: "+item.fingerprint).FontSize(12).TextColor(ui.Hex("#79c0ff"))
+			ui.Text(c, "当前收到指纹: "+item.fingerprint).FontSize(12).TextColor(colAccentText)
 		})
 
 		ui.Text(c, "可在目标服务器执行 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 核对指纹是否一致。").
-			FontSize(11).TextColor(ui.Hex("#8b949e"))
+			FontSize(11).TextColor(colTextDim)
 
 		if a.tofuErr != "" {
-			ui.Box(c).Padding(8, 10).Radius(6).
-				Background(ui.RGBA(248, 81, 73, 0.14)).Border(1, ui.RGBA(248, 81, 73, 0.4)).
+			ui.Box(c).Padding(8, 10).Radius(7).
+				Background(colDangerBg).Border(1, colDangerBorder).
 				Children(func() {
-					ui.Text(c, a.tofuErr).FontSize(12).TextColor(ui.Hex("#ff7b72"))
+					ui.Text(c, a.tofuErr).FontSize(12).TextColor(colDanger)
 				})
 		}
 
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			if ui.Button(c, "取消连接").Clicked() {
+			if subtleButton(c, "取消连接", 6, 14).Clicked() {
 				a.dismissActiveTofu()
 			}
 			if item.isMismatch {
-				if ui.Button(c, trustLabel).Disabled(a.tofuBusy).
-					Background(ui.RGBA(248, 81, 73, 0.22)).Border(1, ui.RGBA(248, 81, 73, 0.55)).
-					TextColor(ui.Hex("#ff7b72")).Clicked() {
+				if dangerActionButton(c, trustLabel, 6, 14).Disabled(a.tofuBusy).Clicked() {
 					a.confirmActiveTofu()
 				}
 			} else {
-				if ui.PrimaryButton(c, trustLabel).Disabled(a.tofuBusy).Clicked() {
+				if glowPrimaryButton(c, trustLabel, 6, 16).Disabled(a.tofuBusy).Clicked() {
 					a.confirmActiveTofu()
 				}
 			}

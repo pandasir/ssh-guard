@@ -253,7 +253,7 @@ func (a *App) Run() error {
 			MinWidth:        960,
 			MinHeight:       640,
 			StateKey:        "ssh-guard-main",
-			BackgroundColor: "#0d1117",
+			BackgroundColor: "#070a0f",
 			Content:         ui.View(a.View),
 		})
 		a.win.OnClosed(func() {
@@ -373,15 +373,23 @@ func (a *App) shutdown(uiLocked bool) {
 }
 
 func newDesktopTheme() *ui.Theme {
-	t := *ui.DarkTheme().WithAccent(ui.Hex("#2f81f7"))
-	t.Background = ui.Hex("#0d1117")
-	t.Surface = ui.Hex("#161b22")
-	t.Border = ui.Hex("#30363d")
-	t.Text = ui.Hex("#e6edf3")
-	t.TextMuted = ui.Hex("#8b949e")
-	t.Danger = ui.Hex("#f85149")
-	t.Inverse = ui.Hex("#1f2630")
-	t.InverseText = ui.Hex("#e6edf3")
+	t := *ui.DarkTheme().WithAccent(colAccent)
+	t.Background = colCanvasBg
+	t.Surface = colInputBg
+	t.SurfaceHover = colSurfaceBtnHover
+	t.SurfacePressed = colSurfaceBtnPress
+	t.Border = colBorderStrong
+	t.Text = colTextPrimary
+	t.TextMuted = colTextMuted
+	t.AccentHover = colAccentLight
+	t.AccentPressed = colAccentDark
+	t.AccentText = ui.Hex("#ffffff")
+	t.Danger = colDanger
+	t.Warning = colWarn
+	t.Success = colSuccess
+	t.Inverse = colSurfaceBtn
+	t.InverseText = colTextPrimary
+	t.Radius = 7
 	return &t
 }
 
@@ -411,7 +419,7 @@ func (a *App) View(c *ui.Context) {
 	}
 
 	// Main workspace layout: optional left sidebar + expanding terminal workspace.
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(ui.Hex("#0d1117")).Children(func() {
+	ui.Row(c).Fill().AlignItems(ui.Stretch).Background(colCanvasBg).Children(func() {
 		if !a.sidebarHidden {
 			a.renderSidebar(c)
 		}

@@ -111,7 +111,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-win | Out-Null
           Copy-Item -Force $setupExe.FullName "release-win\SSH-Guard-Windows-amd64-installer.exe"
 
-          Get-ChildItem -Path "dist\mygo\windows-amd64" -Include "ssh-guard-*-windows-amd64.tar.gz","*.delta","update-windows-amd64.json" -File |
+          Get-ChildItem -Path "dist\mygo\windows-amd64\*" -Include "ssh-guard-*-windows-amd64.tar.gz","*.delta","update-windows-amd64.json" -File |
             ForEach-Object { Copy-Item -Force $_.FullName "release-win\" }
 
           if (($env:GITHUB_REF -like "refs/tags/v*") -and (-not (Test-Path "release-win\update-windows-amd64.json"))) {

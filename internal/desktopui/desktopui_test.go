@@ -1469,8 +1469,8 @@ func TestAboutModal(t *testing.T) {
 	}
 	app.openAboutModal()
 	tt.Frame()
-	if !tt.HasText("关于 SSH-Guard") || !tt.HasText("v"+appDisplayVersion()) || !tt.HasText(dataDir) || !tt.HasText(app.platform) {
-		t.Fatalf("expected about modal metadata while locked, got %q", tt.Texts())
+	if !tt.HasText("关于 SSH-Guard") || !tt.HasText("v"+appDisplayVersion()) || !tt.HasText(dataDir) || !tt.HasText(app.platform) || !tt.HasText("检查更新") {
+		t.Fatalf("expected about modal metadata and update button while locked, got %q", tt.Texts())
 	}
 	if err := tt.Click("关闭"); err != nil {
 		t.Fatalf("click 关闭 (locked): %v", err)
@@ -1486,8 +1486,8 @@ func TestAboutModal(t *testing.T) {
 	app.submitUnlock()
 	app.openAboutModal()
 	tt.Frame()
-	if !tt.HasText("关于 SSH-Guard") || !tt.HasText(renderBackendLabel()) {
-		t.Fatalf("expected about modal metadata while unlocked, got %q", tt.Texts())
+	if !tt.HasText("关于 SSH-Guard") || !tt.HasText(renderBackendLabel()) || !tt.HasText("检查更新") {
+		t.Fatalf("expected about modal metadata and update button while unlocked, got %q", tt.Texts())
 	}
 	if err := tt.Click("关闭"); err != nil {
 		t.Fatalf("click 关闭 (unlocked): %v", err)
@@ -1535,6 +1535,19 @@ func TestBuildAppMenu(t *testing.T) {
 	if macMenu.ItemByID(menuIDAppAbout) == nil || macMenu.ItemByID(menuIDHelpAbout) == nil {
 		t.Fatal("expected About items on macOS menu")
 	}
+	if macMenu.ItemByID(menuIDAppCheckUpdates) == nil || macMenu.ItemByID(menuIDHelpCheckUpdates) == nil {
+		t.Fatal("expected Check for Updates items on macOS menu")
+	}
+	if got := macMenu.ItemByID(menuIDAppCheckUpdates).Label; got != "检查更新..." {
+		t.Fatalf("expected macOS app menu check updates label 检查更新..., got %q", got)
+	}
+	if macMenu.ItemByID(menuIDAppCheckUpdates).Accelerator != "" || macMenu.ItemByID(menuIDHelpCheckUpdates).Accelerator != "" {
+		t.Fatal("expected Check for Updates items to have no keyboard accelerator")
+	}
+	// Verify Check for Updates appears immediately below About in macOS app menu.
+	if len(macTop[0].Submenu) < 2 || macTop[0].Submenu[0].ID != menuIDAppAbout || macTop[0].Submenu[1].ID != menuIDAppCheckUpdates {
+		t.Fatalf("expected %s immediately below %s in macOS app menu", menuIDAppCheckUpdates, menuIDAppAbout)
+	}
 	if macMenu.ItemByID(menuIDSessionQuit) != nil {
 		t.Fatal("expected Quit under macOS app menu, not Session menu")
 	}
@@ -1559,6 +1572,16 @@ func TestBuildAppMenu(t *testing.T) {
 	}
 	if winMenu.ItemByID(menuIDAppAbout) != nil {
 		t.Fatal("did not expect macOS app menu About item on Windows")
+	}
+	if winMenu.ItemByID(menuIDAppCheckUpdates) != nil {
+		t.Fatal("did not expect macOS app menu Check for Updates item on Windows")
+	}
+	winHelp := winTop[len(winTop)-1].Submenu
+	if len(winHelp) < 2 || winHelp[0].ID != menuIDHelpAbout || winHelp[1].ID != menuIDHelpCheckUpdates || winHelp[1].Label != "检查更新..." {
+		t.Fatalf("expected %s (检查更新...) immediately below %s in Windows Help menu", menuIDHelpCheckUpdates, menuIDHelpAbout)
+	}
+	if winHelp[1].Accelerator != "" {
+		t.Fatalf("expected Windows Check for Updates item to have no accelerator, got %q", winHelp[1].Accelerator)
 	}
 
 	winAccels := map[string]string{}
@@ -1622,6 +1645,7 @@ func TestAppMenuStateSync(t *testing.T) {
 		assertEnabled("locked", id, false)
 	}
 	assertEnabled("locked", menuIDHelpAbout, true)
+	assertEnabled("locked", menuIDHelpCheckUpdates, true)
 
 	// 2. Unlocked with no tabs: session/host/security/zoom-in/out/sidebar enabled; tab-scoped & reset disabled.
 	app.unlockPass = "MasterPass!2026"
@@ -1700,4 +1724,20 @@ func TestAppMenuStateSync(t *testing.T) {
 	assertEnabled("relocked", menuIDCloseTab, false)
 	assertEnabled("relocked", menuIDLockVault, false)
 	assertEnabled("relocked", menuIDHelpAbout, true)
+	assertEnabled("relocked", menuIDHelpCheckUpdates, true)
+
+	// 7. Clicking Check for Updates menu item opens About modal and triggers check even while locked.
+	backend := &fakeUpdateBackend{}
+	app.updateBackend = backend
+	it := app.appMenu.ItemByID(menuIDHelpCheckUpdates)
+	if it == nil || it.Click == nil {
+		t.Fatal("expected Click handler on Check for Updates menu item")
+	}
+	it.Click(it, nil)
+	if !app.aboutOpen {
+		t.Fatal("expected clicking Check for Updates menu item to open About modal")
+	}
+	waitForCondition(t, 2*time.Second, "menu-triggered check completion", func() bool {
+		return backend.checkCalls.Load() == 1
+	})
 }

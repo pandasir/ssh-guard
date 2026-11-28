@@ -10,6 +10,12 @@ import (
 //go:embed nativeembed/ghostty-vt.dll
 var embeddedGhosttyDLL []byte
 
+// isPortableBuild reports whether this binary was compiled as the Windows
+// single-file portable executable.
+func isPortableBuild() bool {
+	return true
+}
+
 // EnsurePortableRuntime extracts the embedded ghostty-vt.dll to %LocalAppData%
 // with SHA-256 verification before terminal.Load() runs.
 func EnsurePortableRuntime() error {

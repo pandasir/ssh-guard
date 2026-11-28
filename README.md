@@ -227,14 +227,30 @@ make build-desktop-win-nsis
 
 ### GitHub Actions 自动构建与发布
 
-仓库内置 [`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)。推送 `v*` 标签后将自动在 Go 1.27 环境下并行构建 macOS 与 Windows 桌面端产物、生成 `SHA256SUMS.txt` 并创建 GitHub Release：
+仓库内置 [`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)。推送 `v*` 标签后将自动在 Go 1.27 环境下并行构建 macOS 与 Windows 桌面端产物、生成签名在线更新归档/增量补丁/清单（`ssh-guard-*-<target>.tar.gz`、`*.delta`、`update-<target>.json`）、汇总 `SHA256SUMS.txt` 并创建 GitHub Release：
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 也可在 GitHub **Actions** 页面通过 `workflow_dispatch` 手动触发构建并下载 Artifacts。
+
+#### 应用内在线更新密钥配置与发布清单
+
+SSH-Guard 的应用内更新默认**零后台静默联网**，仅在用户手动点击「关于 SSH-Guard -> 检查更新」或菜单栏「检查更新...」时走系统代理 / `HTTPS_PROXY` 检查 GitHub Releases，并强制通过编译进二进制的 Ed25519 公钥验签（Windows 单文件便携版仅检查提示并跳转 GitHub Releases 下载页）。
+
+1. **一次性生成 Ed25519 签名密钥对（切勿将私钥提交至 Git）**：
+   ```bash
+   go tool mygo keygen
+   ```
+   - 将生成的公钥 `mygo-update.pub` 内容填入 `mygo.json` 的 `updates.publicKey` 字段。
+   - 将生成的私钥 `mygo-update.key` 内容存入 GitHub 仓库 Secret：`MYGO_UPDATER_PRIVATE_KEY`（并做好离线密码管理器备份；私钥丢失将导致旧版无法在线升级）。
+2. **每次发版前版本同步清单**：
+   - 更新 `mygo.json` 中的 `"version"` 字段；
+   - 更新 `internal/desktopui/about_modal.go` 中的 `appFallbackVersion`；
+   - 在根目录 `CHANGELOG.md` 添加对应的 `## <version>` 章节（`go tool mygo build` 会自动提取写入 `update-<target>.json`）；
+   - 推送对应 `v<version>` 标签触发发布。
 
 ---
 

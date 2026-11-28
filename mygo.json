@@ -2,11 +2,15 @@
   "name": "SSH-Guard",
   "slug": "ssh-guard",
   "identifier": "com.pandasir.sshguard",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "copyright": "MIT License",
   "publisher": "SSH-Guard",
   "license": "MIT",
   "out": "dist/mygo",
+  "updates": {
+    "publicKey": "VCafYB/SEucNH1SrmQwpRvQm9iwAcR+tggBTtLq9zJI=",
+    "github": "pandasir/ssh-guard"
+  },
   "macos": {
     "minimumSystemVersion": "13.0",
     "dmgTitle": "SSH-Guard"

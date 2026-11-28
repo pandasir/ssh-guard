@@ -42,10 +42,13 @@ type Options struct {
 	IdleGuard       *IdleGuard
 
 	// Test / injection hooks (nil uses production defaults).
-	DialConn   func(ctx context.Context, addr string) (net.Conn, error)
-	PickKeyFn  func() (string, error)
-	OpenDirFn  func(dir string) error
-	SkipLoadVT bool
+	DialConn      func(ctx context.Context, addr string) (net.Conn, error)
+	PickKeyFn     func() (string, error)
+	OpenDirFn     func(dir string) error
+	OpenURLFn     func(rawURL string) error
+	RelaunchFn    func()
+	UpdateBackend updateBackend
+	SkipLoadVT    bool
 }
 
 // App holds the full native desktop state and coordinates vault lifecycle,
@@ -62,6 +65,9 @@ type App struct {
 	dialConnFn     func(ctx context.Context, addr string) (net.Conn, error)
 	pickKeyFn      func() (string, error)
 	openDirFn      func(dir string) error
+	openURLFn      func(rawURL string) error
+	relaunchFn     func()
+	updateBackend  updateBackend
 	skipLoadVT     bool
 	loadTerminalFn func() error
 	termLoadMu     sync.Mutex
@@ -100,6 +106,7 @@ type App struct {
 	termFontSize  float32
 	sidebarHidden bool
 	aboutOpen     bool
+	update        updateState
 
 	// Queued TOFU / MITM verification modal
 	tofuPending *tofuItem
@@ -176,6 +183,9 @@ func NewApp(opts Options) (*App, error) {
 		dialConnFn:      opts.DialConn,
 		pickKeyFn:       opts.PickKeyFn,
 		openDirFn:       opts.OpenDirFn,
+		openURLFn:       opts.OpenURLFn,
+		relaunchFn:      opts.RelaunchFn,
+		updateBackend:   opts.UpdateBackend,
 		skipLoadVT:      opts.SkipLoadVT,
 		theme:           newDesktopTheme(),
 		initialized:     initialized,
@@ -183,6 +193,15 @@ func NewApp(opts Options) (*App, error) {
 	}
 	if app.openDirFn == nil {
 		app.openDirFn = openPathInOS
+	}
+	if app.openURLFn == nil {
+		app.openURLFn = mygo.Shell.OpenExternal
+	}
+	if app.relaunchFn == nil {
+		app.relaunchFn = func() { mygo.App.Relaunch() }
+	}
+	if app.updateBackend == nil {
+		app.updateBackend = newDefaultUpdateBackend()
 	}
 	if app.pickKeyFn == nil {
 		app.pickKeyFn = app.pickPrivateKeyNative
@@ -322,19 +341,26 @@ func (a *App) LockVault(reason string) {
 
 // Shutdown cleanly closes all sessions, terminals, replay players, vault KEK, and DB once.
 func (a *App) Shutdown() {
+	a.shutdown(false)
+}
+
+func (a *App) shutdown(uiLocked bool) {
 	a.shutdownOnce.Do(func() {
 		log.Println("SSH-Guard Desktop shutting down: closing SSH sessions and wiping in-memory KEK...")
 		if a.idle != nil {
 			a.idle.Stop()
 		}
-		if a.win == nil {
+		needLock := a.win == nil && !uiLocked
+		if needLock {
 			a.uiMu.Lock()
 		}
+		a.update.gen++
+		a.cancelUpdateOp()
 		a.closeAllTabs()
 		a.stopReplay()
 		a.clearUnlockInputs()
 		a.hostModal.clearSecrets()
-		if a.win == nil {
+		if needLock {
 			a.uiMu.Unlock()
 		}
 		if a.vault != nil {

@@ -3,24 +3,26 @@ package desktopui
 import "github.com/egoist/mygo"
 
 const (
-	menuIDAppAbout        = "app.about"
-	menuIDNewLocal        = "session.new_local"
-	menuIDNewHost         = "session.new_host"
-	menuIDReconnect       = "session.reconnect"
-	menuIDCloseTab        = "session.close_tab"
-	menuIDCloseAllTabs    = "session.close_all"
-	menuIDOpenDataDir     = "session.open_data_dir"
-	menuIDSessionQuit     = "session.quit"
-	menuIDClearScreen     = "terminal.clear_screen"
-	menuIDClearScrollback = "terminal.clear_scrollback"
-	menuIDZoomIn          = "terminal.zoom_in"
-	menuIDZoomOut         = "terminal.zoom_out"
-	menuIDZoomReset       = "terminal.zoom_reset"
-	menuIDToggleSidebar   = "view.toggle_sidebar"
-	menuIDLockVault       = "security.lock_vault"
-	menuIDRecordings      = "security.recordings"
-	menuIDAuditLogs       = "security.audit_logs"
-	menuIDHelpAbout       = "help.about"
+	menuIDAppAbout         = "app.about"
+	menuIDAppCheckUpdates  = "app.check_updates"
+	menuIDNewLocal         = "session.new_local"
+	menuIDNewHost          = "session.new_host"
+	menuIDReconnect        = "session.reconnect"
+	menuIDCloseTab         = "session.close_tab"
+	menuIDCloseAllTabs     = "session.close_all"
+	menuIDOpenDataDir      = "session.open_data_dir"
+	menuIDSessionQuit      = "session.quit"
+	menuIDClearScreen      = "terminal.clear_screen"
+	menuIDClearScrollback  = "terminal.clear_scrollback"
+	menuIDZoomIn           = "terminal.zoom_in"
+	menuIDZoomOut          = "terminal.zoom_out"
+	menuIDZoomReset        = "terminal.zoom_reset"
+	menuIDToggleSidebar    = "view.toggle_sidebar"
+	menuIDLockVault        = "security.lock_vault"
+	menuIDRecordings       = "security.recordings"
+	menuIDAuditLogs        = "security.audit_logs"
+	menuIDHelpAbout        = "help.about"
+	menuIDHelpCheckUpdates = "help.check_updates"
 )
 
 // menuState is a comparable snapshot of all app state that drives native menu
@@ -282,6 +284,15 @@ func (a *App) buildAppMenu(goos string) *mygo.Menu {
 				})
 			},
 		},
+		{
+			ID:    menuIDHelpCheckUpdates,
+			Label: "检查更新...",
+			Click: func(_ *mygo.MenuItem, _ *mygo.Window) {
+				a.runUI(func() {
+					a.openAboutAndCheckUpdates()
+				})
+			},
+		},
 	}
 
 	var top []*mygo.MenuItem
@@ -295,6 +306,15 @@ func (a *App) buildAppMenu(goos string) *mygo.Menu {
 					Click: func(_ *mygo.MenuItem, _ *mygo.Window) {
 						a.runUI(func() {
 							a.openAboutModal()
+						})
+					},
+				},
+				{
+					ID:    menuIDAppCheckUpdates,
+					Label: "检查更新...",
+					Click: func(_ *mygo.MenuItem, _ *mygo.Window) {
+						a.runUI(func() {
+							a.openAboutAndCheckUpdates()
 						})
 					},
 				},

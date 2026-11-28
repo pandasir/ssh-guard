@@ -23,6 +23,8 @@ jobs:
           go test -v -race ./...
           go tool mygo vet .
       - name: Build, Verify & Package macOS DMG
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: |
           chmod +x scripts/fix-mac-gatekeeper.sh
           go tool mygo build -platform darwin/arm64
@@ -46,10 +48,23 @@ jobs:
             ln -s /Applications dmg-stage/Applications
             hdiutil create -volname "SSH-Guard" -srcfolder dmg-stage -ov -format UDZO release-mac/SSH-Guard-macOS-arm64.dmg
           fi
+
+          shopt -s nullglob
+          for f in dist/mygo/darwin-arm64/ssh-guard-*-darwin-arm64.tar.gz \
+                   dist/mygo/darwin-arm64/*.delta \
+                   dist/mygo/darwin-arm64/update-darwin-arm64.json; do
+            cp -f "$f" release-mac/
+          done
+          shopt -u nullglob
+
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]] && [ ! -f release-mac/update-darwin-arm64.json ]; then
+            echo "ERROR: missing release-mac/update-darwin-arm64.json on tag release (ensure MYGO_UPDATER_PRIVATE_KEY secret is set)" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ssh-guard-desktop-macos-arm64
-          path: release-mac/SSH-Guard-macOS-arm64.dmg
+          path: release-mac/*
 
   build-desktop-windows:
     name: Build Windows Native Desktop (NSIS Installer + Offline Portable EXE)
@@ -77,6 +92,8 @@ jobs:
           }
       - name: Build Windows NSIS Installer & Offline Single-File Portable EXE
         shell: pwsh
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
         run: |
           $env:GOFLAGS = "-tags=mygo_nowebview"
           go tool mygo build -platform windows/amd64
@@ -94,11 +111,20 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-win | Out-Null
           Copy-Item -Force $setupExe.FullName "release-win\SSH-Guard-Windows-amd64-installer.exe"
 
+          Get-ChildItem -Path "dist\mygo\windows-amd64" -Include "ssh-guard-*-windows-amd64.tar.gz","*.delta","update-windows-amd64.json" -File |
+            ForEach-Object { Copy-Item -Force $_.FullName "release-win\" }
+
+          if (($env:GITHUB_REF -like "refs/tags/v*") -and (-not (Test-Path "release-win\update-windows-amd64.json"))) {
+            throw "Missing release-win\update-windows-amd64.json on tag release (ensure MYGO_UPDATER_PRIVATE_KEY secret is set)"
+          }
+
           $embedDir = "internal\desktopui\nativeembed"
           $embedDll = Join-Path $embedDir "ghostty-vt.dll"
           New-Item -ItemType Directory -Force -Path $embedDir | Out-Null
           try {
             Copy-Item -Force $dllSrc $embedDll
+            # Clear signing key so portable build does not generate or overwrite Windows NSIS update manifests.
+            Remove-Item Env:MYGO_UPDATER_PRIVATE_KEY -ErrorAction SilentlyContinue
             $env:GOFLAGS = "-tags=mygo_nowebview,portable"
             go tool mygo build -platform windows/amd64 -skip-installer -o dist/mygo-portable
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
